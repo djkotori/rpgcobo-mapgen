@@ -3,7 +3,7 @@
 > [日本語版 README はこちら](README.ja.md)
 
 A command-line tool for procedurally generating map images for 2D RPGs.  
-Outputs top-view PNG maps in three types: world map, dungeon, and cave.
+Outputs top-view PNG maps in six types: world, dungeon, cave, town, village, and castle, with quality metrics.
 
 ---
 
@@ -28,6 +28,9 @@ Map types available:
 | `world` | Field / world map | 256×256 |
 | `dungeon` | Indoor dungeon (rooms + corridors) | 160×160 |
 | `cave` | Cave dungeon (natural terrain) | 160×160 |
+| `town` | Town (entrances, streets, plaza, buildings, parks) | 160×160 |
+| `village` | Rural village (winding paths, cottages, fields, ponds) | 160×160 |
+| `castle` | Castle (moat, walls, gate, towers, keep, halls) | 160×160 |
 
 Each pixel corresponds to one block (one character tile), and biomes are rendered as solid colors.  
 The output images are intended to be further processed into heightmaps or texture maps for a game.
@@ -37,6 +40,9 @@ The output images are intended to be further processed into heightmaps or textur
 ![WorldMap](out_world.png)
 ![CaveMap](out_cave.png)
 ![DungeonMap](out_dungeon.png)
+![TownMap](out_town.png)
+![VillageMap](out_village.png)
+![CastleMap](out_castle.png)
 
 ---
 
@@ -49,12 +55,18 @@ AIMapImageGen/
 │   ├── build.bat
 │   ├── generate_30_maps.bat
 │   ├── generate_30_dungeon_160.bat
+│   ├── generate_30_town_160.bat
+│   ├── generate_30_village_160.bat
+│   ├── generate_30_castle_160.bat
 │   └── ...
 ├── build/               ← CMake build output (auto-generated)
 ├── doc/                 ← spec documents (generation algorithm details)
 │   ├── mapgen_world.md
 │   ├── mapgen_dungeon.md
 │   └── mapgen_cave.md
+│   ├── mapgen_town.md
+│   ├── mapgen_village.md
+│   └── mapgen_castle.md
 ├── sample/              ← sample images
 │   ├── worldmap/
 │   ├── dungeon/
@@ -63,9 +75,14 @@ AIMapImageGen/
     ├── CMakeLists.txt
     ├── main.cpp
     ├── MapImageGenerator.h
+    ├── MapPlan.h
+    ├── MapQuality.{h,cpp}
     ├── WorldMapImageGenerator.{h,cpp}
     ├── DungeonMapImageGenerator.{h,cpp}
     ├── CaveMapImageGenerator.{h,cpp}
+    ├── TownMapImageGenerator.{h,cpp}
+    ├── VillageMapImageGenerator.{h,cpp}
+    ├── CastleMapImageGenerator.{h,cpp}
     └── utils.{h,cpp}
 ```
 
@@ -122,22 +139,24 @@ copy ..\build\Release\mapimggen.exe ..
 ## Usage
 
 ```
-mapimggen.exe -type <world|dungeon|cave> [options]
+mapimggen.exe -type <world|dungeon|cave|town|village|castle> [options]
 ```
 
 ### Options
 
 | Option | Description | Default |
 |---|---|---|
-| `-type <world\|dungeon\|cave>` | Map type | `world` |
-| `-w <width>` | Width in pixels. Range: 64–512 | world:256 / dungeon,cave:160 |
-| `-d <depth>` | Height in pixels. Range: 64–512 | world:256 / dungeon,cave:160 |
+| `-type <world\|dungeon\|cave\|town\|village\|castle>` | Map type | `world` |
+| `-w <width>` | Width in pixels. Range: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
+| `-d <depth>` | Height in pixels. Range: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
 | `-seed <number>` | Random seed (for reproducibility) | Random |
 | `-dir <directory>` | Output directory | `.` (current directory) |
 | `-out <filename>` | Output filename (no extension) | `out` |
 | `--png` | Write a PNG image | Enabled |
 | `--data` | Write a biome CSV file | Disabled |
 | `--report` | Write a statistics report | Disabled |
+| `--plan` | Write biome data plus regions/markers as JSON | Disabled |
+| `--strict` | Exit with code 7 when quality validation fails | Disabled |
 | `-p <key=value>` | Override a specific generation parameter | — |
 
 ### Examples
@@ -151,6 +170,19 @@ mapimggen.exe -type dungeon -w 160 -d 160 -dir out -out dungeon_001 --png --data
 
 REM Cave (default size, PNG only)
 mapimggen.exe -type cave -dir out -out cave_001 --png
+
+REM Town (structured plan output)
+mapimggen.exe -type town -seed 12345 -dir out -out town_001 --png --report --plan
+
+REM Village (rural settlement with furniture regions)
+mapimggen.exe -type village -seed 12345 -dir out -out village_001 --png --report --plan --strict
+
+REM Coastal town / forest village (use the newly built executable)
+build\Release\mapimggen.exe -type town -w 160 -d 160 -p settlementSite=1 -dir out -out coastal_town --png --plan --strict
+build\Release\mapimggen.exe -type village -w 160 -d 160 -p settlementSite=3 -dir out -out forest_village --png --plan --strict
+
+REM Castle (fail CI on a quality warning)
+mapimggen.exe -type castle -seed 12345 -dir out -out castle_001 --png --report --plan --strict
 ```
 
 ### Output Files
@@ -160,6 +192,7 @@ mapimggen.exe -type cave -dir out -out cave_001 --png
 | `--png` | `world_001.png` | Biome color-coded image |
 | `--data` | `world_001.csv` | 2D array of biome IDs |
 | `--report` | `world_001_report.txt` | Biome statistics summary |
+| `--plan` | `world_001_plan.json` | Biome array, archetype, regions/markers, quality result, and semantic links |
 
 ---
 
@@ -167,6 +200,7 @@ mapimggen.exe -type cave -dir out -out cave_001 --png
 
 | File | Description |
 |---|---|
+| bat/generate_30_all.bat | Evaluate all six types, 30 seeds each, with PNG/CSV/Plan/report output |
 | `bat/build.bat` | Build and copy the exe to the root |
 | `bat/generate_30_maps.bat` | Generate 30 world maps in bulk (256×256) |
 | `bat/generate_30_maps_128.bat` | Generate 30 world maps (128×128) |
@@ -175,6 +209,16 @@ mapimggen.exe -type cave -dir out -out cave_001 --png
 | `bat/generate_30_dungeon_160.bat` | Generate 30 dungeons (160×160) |
 | `bat/generate_30_dungeon_256.bat` | Generate 30 dungeons (256×256) |
 | `bat/generate_30_cave_160.bat` | Generate 30 caves (160×160) |
+| `bat/generate_30_town_160.bat` | Generate 30 towns with plans/reports (160×160) |
+| `bat/generate_30_village_160.bat` | Generate 30 villages with plans/reports (160×160) |
+| `bat/generate_settlement_sites_160.bat [seed]` | Generate paired towns/villages at all 7 sites (14 images) |
+| `bat/generate_30_castle_160.bat` | Generate 30 castles with strict quality checks (160×160) |
+
+| Script | Description |
+|---|---|
+| `tools/evaluate_town_castle.ps1` | Evaluate 30 town/village/castle seeds, all archetype coverage, quality gates, archetype distribution, plan diversity between seeds, and same-seed reproducibility. |
+| `tools/evaluate_town_castle_sizes.ps1` | Strictly generate a 64–1024 size matrix to check scale adaptation. |
+| `tools/validate_town_castle_plan.ps1` | Validate plan dimensions, coordinates, marker-to-region links, semantic roles, door/bridge tile consistency, and region parent/child relationships. |
 
 Results are saved to `out/<timestamp>/`.
 
@@ -184,7 +228,7 @@ Results are saved to `out/<timestamp>/`.
 
 ### Adding a New Map Type
 
-The existing spec documents (`doc/mapgen_world.md` → `doc/mapgen_dungeon.md` → `doc/mapgen_cave.md`) are real examples of how each type was derived from the previous one.  
+The existing spec documents (`doc/mapgen_world.md` → `doc/mapgen_dungeon.md` → `doc/mapgen_cave.md` → `doc/mapgen_town.md` → `doc/mapgen_castle.md`) are real examples of how each type was derived from the previous one.
 Follow these steps to add a new map type.
 
 #### 1. Write a spec document
@@ -212,10 +256,7 @@ Use the existing DungeonMapImageGenerator as a reference.
 class MapImageGenerator {
 public:
     virtual ~MapImageGenerator() = default;
-    virtual void Generate(
-        int width, int height, uint32_t seed,
-        const std::unordered_map<std::string, double>& params,
-        std::vector<uint8_t>& outBiomes) = 0;
+    virtual bool Generate(MapPlan& outPlan, std::string& outError) = 0;
 };
 ```
 
@@ -223,19 +264,15 @@ Any new class only needs to implement `Generate()` to integrate with `main.cpp`.
 
 #### 4. Register the new type in main.cpp
 
-Add the new type to the generator selection logic in `src/main.cpp`:
+Add the new type to the `MapTypes()` registry in `src/main.cpp`:
 
 ```cpp
 #include "<NewType>MapImageGenerator.h"
 
-// Type validation in ParseArgs
-if (opt.type != "world" && opt.type != "dungeon" && opt.type != "cave"
-    && opt.type != "<newtype>") { ... }
-
-// Generator instantiation
-if (opt.type == "<newtype>") {
-    gen = std::make_unique<<NewType>MapImageGenerator>();
-}
+{"<newtype>", 160, 160, [](MapGenParams p) {
+    return std::unique_ptr<MapImageGenerator>(
+        std::make_unique<NewTypeMapImageGenerator>(std::move(p)));
+}}
 ```
 
 #### 5. Add the source file to CMakeLists.txt
@@ -255,6 +292,7 @@ add_executable(mapimggen
 - If the generated result does not match expectations, refine the relevant section of the spec and ask Copilot to regenerate — iterating on the spec is more effective than patching generated code directly.
 
 ---
+
 
 ## License
 

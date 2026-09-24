@@ -6,6 +6,6 @@ class CaveMapImageGenerator : public MapImageGenerator {
 public:
     explicit CaveMapImageGenerator(MapGenParams params);
 
-    bool Generate(std::vector<std::uint8_t>& outBiomes, std::string& outError) override;
+    bool Generate(MapPlan& outPlan, std::string& outError) override;
     MapGenColor BiomeToColor(std::uint8_t biome) const override;
 };

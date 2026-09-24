@@ -1,8 +1,11 @@
 #pragma once
 
+#include "MapPlan.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 enum MapGenBiomeID {
@@ -21,6 +24,16 @@ enum MapGenBiomeID {
     RIVER = 7,
     LAKE = 8,
     SEA = 9,
+    // Settlement semantic tiles. Existing biome IDs remain unchanged.
+    TOWN_FLOOR = 10,
+    TOWN_WOOD_FLOOR = 11,
+    TOWN_STONE_FLOOR = 12,
+    TOWN_FURNITURE = 13,
+    TOWN_PAVEMENT = 14,
+    TOWN_SEA = 15,
+    TOWN_CLIFF = 16,
+    TOWN_TREES = 17,
+    CASTLE_WALL_WALK = 18,
 };
 
 struct MapGenParams {
@@ -41,7 +54,7 @@ public:
     explicit MapImageGenerator(MapGenParams params) : params_(std::move(params)) {}
     virtual ~MapImageGenerator() = default;
 
-    virtual bool Generate(std::vector<std::uint8_t>& outBiomes, std::string& outError) = 0;
+    virtual bool Generate(MapPlan& outPlan, std::string& outError) = 0;
     virtual MapGenColor BiomeToColor(std::uint8_t biome) const = 0;
 
     const MapGenParams& Params() const { return params_; }

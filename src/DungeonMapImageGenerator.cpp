@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <queue>
 #include <random>
 #include <utility>
 #include <vector>
@@ -146,7 +147,7 @@ MapGenColor DungeonMapImageGenerator::BiomeToColor(std::uint8_t biome) const {
     }
 }
 
-bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, std::string& outError) {
+bool DungeonMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
     const int w = params_.width;
     const int h = params_.depth;
     if (w <= 0 || h <= 0) {
@@ -155,6 +156,8 @@ bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, st
     }
 
     const int n = w * h;
+    outPlan.Reset(w, h, params_.seed, "dungeon");
+    std::vector<std::uint8_t>& outBiomes = outPlan.biomes;
     outBiomes.assign(static_cast<std::size_t>(n), static_cast<std::uint8_t>(SEA));
 
     std::mt19937 rng(params_.seed);
@@ -185,6 +188,8 @@ bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, st
     const int roomCountMin = static_cast<int>(std::round(readParam("roomCountMin", static_cast<double>(roomCountMinDefault), 3.0, 64.0, 0.6)));
     const int roomCountMax = static_cast<int>(std::clamp(std::round(readParam("roomCountMax", static_cast<double>(std::max(roomCountMin, roomCountMaxDefault)), static_cast<double>(roomCountMin), 128.0, 0.6)), static_cast<double>(roomCountMin), 128.0));
     const float largeRoomChance = static_cast<float>(readParam("largeRoomChance", 0.18, 0.0, 0.75, 1.0));
+    const float hazardRate = static_cast<float>(readParam("hazardRate", 0.14, 0.0, 0.65, 1.0));
+    const float corridorTargetRatio = static_cast<float>(readParam("corridorTargetRatio", 0.14, 0.08, 0.32, 0.8));
     const int corridorWidth = static_cast<int>(std::clamp(GetParam("corridorWidth", 4.0), 4.0, 4.0));
     const int mainCorridorWidth = static_cast<int>(std::clamp(GetParam("mainCorridorWidth", 8.0), 8.0, 8.0));
     const float loopRate = static_cast<float>(readParam("loopRate", 0.30, 0.0, 1.4, 1.0));
@@ -895,6 +900,22 @@ bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, st
         if (score < centralRoomScore) {
             centralRoomScore = score;
             centralRoomIdx = i;
+        }
+    }
+
+    // Reapply the semantic floor after any room rebuild performed by the gap
+    // fixer above.
+    for (int i = 0; i < static_cast<int>(rooms.size()); ++i) {
+        if (!rooms[static_cast<std::size_t>(i)].key && i != centralRoomIdx) continue;
+        const Rect& r = rooms[static_cast<std::size_t>(i)].rect;
+        for (int y = r.y0 + 2; y < r.y1 - 2; ++y) {
+            for (int x = r.x0 + 2; x < r.x1 - 2; ++x) {
+                const int cell = Index(x, y, w);
+                if (outBiomes[static_cast<std::size_t>(cell)] == PLAIN ||
+                    outBiomes[static_cast<std::size_t>(cell)] == DESERT) {
+                    outBiomes[static_cast<std::size_t>(cell)] = FOREST;
+                }
+            }
         }
     }
 
@@ -2531,6 +2552,126 @@ bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, st
         }
     }
 
+    // Add compact hazards inside rooms only.  A failed connectivity check
+    // restores the pre-hazard plan, so hazards never split the playable graph.
+    const std::vector<std::uint8_t> hazardBackup = outBiomes;
+    for (std::size_t ri = 0; ri < rooms.size(); ++ri) {
+        if (rooms[ri].key || static_cast<int>(ri) == centralRoomIdx || ur(rng) > hazardRate) {
+            continue;
+        }
+        const Rect& r = rooms[ri].rect;
+        const int innerWidth = r.Width() - 4;
+        const int innerHeight = r.Height() - 4;
+        if (innerWidth < 4 || innerHeight < 4) {
+            continue;
+        }
+        const int patchWidth = std::max(2, std::min(innerWidth / 3, 6));
+        const int patchHeight = std::max(2, std::min(innerHeight / 3, 5));
+        const int x0 = r.x0 + 2 + std::max(0, (innerWidth - patchWidth) / 2);
+        const int y0 = r.y0 + 2 + std::max(0, (innerHeight - patchHeight) / 2);
+        const std::uint8_t hazardTile = (ur(rng) < 0.30f) ? static_cast<std::uint8_t>(LAKE) : static_cast<std::uint8_t>(RIVER);
+        for (int y = y0; y < y0 + patchHeight; ++y) {
+            for (int x = x0; x < x0 + patchWidth; ++x) {
+                const int cell = Index(x, y, w);
+                if (roomMask[static_cast<std::size_t>(cell)] != 0 &&
+                    (outBiomes[static_cast<std::size_t>(cell)] == PLAIN ||
+                     outBiomes[static_cast<std::size_t>(cell)] == DESERT ||
+                     outBiomes[static_cast<std::size_t>(cell)] == FOREST)) {
+                    outBiomes[static_cast<std::size_t>(cell)] = hazardTile;
+                }
+            }
+        }
+    }
+
+    auto isDungeonWalkable = [](std::uint8_t biome) {
+        return biome == PLAIN || biome == DESERT || biome == FOREST || biome == ROAD || biome == BRIDGE;
+    };
+    int walkableCount = 0;
+    int largestComponent = 0;
+    std::vector<std::uint8_t> hazardVisited(static_cast<std::size_t>(n), 0);
+    for (int start = 0; start < n; ++start) {
+        if (hazardVisited[static_cast<std::size_t>(start)] != 0 ||
+            !isDungeonWalkable(outBiomes[static_cast<std::size_t>(start)])) {
+            continue;
+        }
+        int componentSize = 0;
+        std::queue<int> pending;
+        pending.push(start);
+        hazardVisited[static_cast<std::size_t>(start)] = 1;
+        while (!pending.empty()) {
+            const int current = pending.front();
+            pending.pop();
+            ++componentSize;
+            ++walkableCount;
+            const int cx = current % w;
+            const int cy = current / w;
+            for (const Point& direction : std::array<Point, 4>{{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}}) {
+                const int nx = cx + direction.x;
+                const int ny = cy + direction.y;
+                if (!InBounds(nx, ny, w, h)) {
+                    continue;
+                }
+                const int next = Index(nx, ny, w);
+                if (hazardVisited[static_cast<std::size_t>(next)] == 0 &&
+                    isDungeonWalkable(outBiomes[static_cast<std::size_t>(next)])) {
+                    hazardVisited[static_cast<std::size_t>(next)] = 1;
+                    pending.push(next);
+                }
+            }
+        }
+        largestComponent = std::max(largestComponent, componentSize);
+    }
+    if (walkableCount == 0 || largestComponent * 100 < walkableCount * 95) {
+        outBiomes = hazardBackup;
+    }
+
+    // Existing layouts tend to produce thin corridors.  Grow connected road
+    // cells toward a measurable target while preserving room masks and doors.
+    const int targetCorridorCells = static_cast<int>(std::round(static_cast<double>(n) * corridorTargetRatio));
+    int currentCorridorCells = 0;
+    for (std::uint8_t biome : outBiomes) {
+        if (biome == ROAD) {
+            ++currentCorridorCells;
+        }
+    }
+    for (int pass = 0; pass < 12 && currentCorridorCells < targetCorridorCells; ++pass) {
+        std::vector<int> candidates;
+        for (int y = 1; y < h - 1; ++y) {
+            for (int x = 1; x < w - 1; ++x) {
+                const int cell = Index(x, y, w);
+                if (outBiomes[static_cast<std::size_t>(cell)] != SEA ||
+                    roomMask[static_cast<std::size_t>(cell)] != 0 ||
+                    roadBlockMask[static_cast<std::size_t>(cell)] != 0) {
+                    continue;
+                }
+                int roadNeighbors = 0;
+                for (const Point& direction : std::array<Point, 4>{{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}}) {
+                    const int nx = x + direction.x;
+                    const int ny = y + direction.y;
+                    if (InBounds(nx, ny, w, h) && outBiomes[static_cast<std::size_t>(Index(nx, ny, w))] == ROAD) {
+                        ++roadNeighbors;
+                    }
+                }
+                if (roadNeighbors > 0) {
+                    candidates.push_back(cell);
+                }
+            }
+        }
+        std::shuffle(candidates.begin(), candidates.end(), rng);
+        if (candidates.empty()) {
+            break;
+        }
+        for (int cell : candidates) {
+            if (currentCorridorCells >= targetCorridorCells) {
+                break;
+            }
+            if (outBiomes[static_cast<std::size_t>(cell)] == SEA) {
+                outBiomes[static_cast<std::size_t>(cell)] = ROAD;
+                ++currentCorridorCells;
+            }
+        }
+    }
+
     // Enforce 1-tile wall thickness: create a single wall ring around solid cells.
     auto isSolid = [](std::uint8_t b) {
         return b == PLAIN || b == DESERT || b == FOREST || b == ROAD || b == BRIDGE || b == RIVER || b == LAKE;
@@ -2573,5 +2714,10 @@ bool DungeonMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, st
     }
 
     outBiomes.swap(next);
+    for (std::size_t i = 0; i < rooms.size(); ++i) {
+        const Rect& r = rooms[i].rect;
+        outPlan.regions.push_back({rooms[i].key ? "key_room" : (i == static_cast<std::size_t>(centralRoomIdx) ? "central_room" : "room"),
+            static_cast<int>(i), r.x0, r.y0, r.x1 - 1, r.y1 - 1});
+    }
     return true;
 }

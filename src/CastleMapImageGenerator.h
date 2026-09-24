@@ -2,9 +2,9 @@
 
 #include "MapImageGenerator.h"
 
-class DungeonMapImageGenerator : public MapImageGenerator {
+class CastleMapImageGenerator : public MapImageGenerator {
 public:
-    explicit DungeonMapImageGenerator(MapGenParams params);
+    explicit CastleMapImageGenerator(MapGenParams params);
 
     bool Generate(MapPlan& outPlan, std::string& outError) override;
     MapGenColor BiomeToColor(std::uint8_t biome) const override;

@@ -337,7 +337,7 @@ MapGenColor WorldMapImageGenerator::BiomeToColor(std::uint8_t biome) const {
     }
 }
 
-bool WorldMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, std::string& outError) {
+bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
     const int w = params_.width;
     const int h = params_.depth;
     if (w <= 0 || h <= 0) {
@@ -346,6 +346,8 @@ bool WorldMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, std:
     }
 
     const int n = w * h;
+    outPlan.Reset(w, h, params_.seed, "world");
+    std::vector<std::uint8_t>& outBiomes = outPlan.biomes;
     outBiomes.assign(static_cast<std::size_t>(n), static_cast<std::uint8_t>(PLAIN));
 
     const float seaLevel = static_cast<float>(std::clamp(GetParam("seaLevel", 0.48), 0.2, 0.8));
@@ -1992,6 +1994,10 @@ bool WorldMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, std:
     if (pois.size() < 6) {
         tryPickFrom(allPassableCandidates, 6 - static_cast<int>(pois.size()));
     }
+    for (int i = 0; i < static_cast<int>(pois.size()); ++i) {
+        const Point& poi = pois[static_cast<std::size_t>(i)];
+        outPlan.markers.push_back({i == 0 ? "capital" : "poi", poi.x, poi.y, i});
+    }
 
     if (pois.size() >= 2) {
         std::vector<Edge> edges;
@@ -2773,6 +2779,163 @@ bool WorldMapImageGenerator::Generate(std::vector<std::uint8_t>& outBiomes, std:
                         outBiomes[static_cast<std::size_t>(Index(x, y, w))] = static_cast<std::uint8_t>(SEA);
                     }
                 }
+            }
+        }
+    }
+
+    // Keep the macro land/sea balance inside the documented range.  Only
+    // ordinary land is removed, while expansion uses interior sea cells near
+    // existing land, so rivers, roads, mountains, and POI markers survive.
+    {
+        const int minLandCells = static_cast<int>(std::lround(static_cast<double>(n) * 0.35));
+        const int maxLandCells = static_cast<int>(std::lround(static_cast<double>(n) * 0.70));
+        int landCells = 0;
+        std::unordered_set<int> protectedCells;
+        protectedCells.reserve(outPlan.markers.size());
+        for (const MapPlanMarker& marker : outPlan.markers) {
+            if (InBounds(marker.x, marker.y, w, h)) {
+                protectedCells.insert(Index(marker.x, marker.y, w));
+            }
+        }
+        for (std::uint8_t biome : outBiomes) {
+            if (!IsWater(biome)) ++landCells;
+        }
+
+        if (landCells < minLandCells) {
+            std::vector<std::pair<int, int>> candidates;
+            candidates.reserve(static_cast<std::size_t>(n - landCells));
+            for (int y = 2; y < h - 2; ++y) {
+                for (int x = 2; x < w - 2; ++x) {
+                    const int cell = Index(x, y, w);
+                    if (outBiomes[static_cast<std::size_t>(cell)] != SEA || protectedCells.find(cell) != protectedCells.end()) continue;
+                    int adjacentLand = 0;
+                    for (int oy = -1; oy <= 1; ++oy) {
+                        for (int ox = -1; ox <= 1; ++ox) {
+                            if (ox == 0 && oy == 0) continue;
+                            const std::uint8_t adjacentBiome = outBiomes[static_cast<std::size_t>(Index(x + ox, y + oy, w))];
+                            if (!IsWater(adjacentBiome)) ++adjacentLand;
+                        }
+                    }
+                    candidates.push_back({adjacentLand, cell});
+                }
+            }
+            std::sort(candidates.begin(), candidates.end(), [](const std::pair<int, int>& lhs, const std::pair<int, int>& rhs) {
+                if (lhs.first != rhs.first) return lhs.first > rhs.first;
+                return lhs.second < rhs.second;
+            });
+            for (const auto& candidate : candidates) {
+                if (landCells >= minLandCells) break;
+                outBiomes[static_cast<std::size_t>(candidate.second)] = PLAIN;
+                ++landCells;
+            }
+            if (landCells < minLandCells) {
+                for (int y = 2; y < h - 2 && landCells < minLandCells; ++y) {
+                    for (int x = 2; x < w - 2 && landCells < minLandCells; ++x) {
+                        const int cell = Index(x, y, w);
+                        if (outBiomes[static_cast<std::size_t>(cell)] == SEA && protectedCells.find(cell) == protectedCells.end()) {
+                            outBiomes[static_cast<std::size_t>(cell)] = PLAIN;
+                            ++landCells;
+                        }
+                    }
+                }
+            }
+        } else if (landCells > maxLandCells) {
+            std::vector<std::pair<int, int>> candidates;
+            for (int cell = 0; cell < n; ++cell) {
+                const std::uint8_t biome = outBiomes[static_cast<std::size_t>(cell)];
+                if ((biome != PLAIN && biome != DESERT && biome != FOREST) || protectedCells.find(cell) != protectedCells.end()) continue;
+                const int x = cell % w;
+                const int y = cell / w;
+                int adjacentSea = 0;
+                int adjacentRoad = 0;
+                for (int oy = -1; oy <= 1; ++oy) {
+                    for (int ox = -1; ox <= 1; ++ox) {
+                        if ((ox == 0 && oy == 0) || !InBounds(x + ox, y + oy, w, h)) continue;
+                        const std::uint8_t neighbor = outBiomes[static_cast<std::size_t>(Index(x + ox, y + oy, w))];
+                        if (neighbor == SEA) ++adjacentSea;
+                        if (neighbor == ROAD || neighbor == BRIDGE) ++adjacentRoad;
+                    }
+                }
+                candidates.push_back({adjacentSea * 4 - adjacentRoad * 10, cell});
+            }
+            std::sort(candidates.begin(), candidates.end(), [](const std::pair<int, int>& lhs, const std::pair<int, int>& rhs) {
+                if (lhs.first != rhs.first) return lhs.first > rhs.first;
+                return lhs.second < rhs.second;
+            });
+            for (const auto& candidate : candidates) {
+                if (landCells <= maxLandCells) break;
+                if (outBiomes[static_cast<std::size_t>(candidate.second)] == PLAIN ||
+                    outBiomes[static_cast<std::size_t>(candidate.second)] == DESERT ||
+                    outBiomes[static_cast<std::size_t>(candidate.second)] == FOREST) {
+                    outBiomes[static_cast<std::size_t>(candidate.second)] = SEA;
+                    --landCells;
+                }
+            }
+        }
+    }
+
+    // Coverage parameters are quality targets, not only threshold hints.  The
+    // earlier biome pass could collapse desert/forest into tiny speckles after
+    // water and road repair.  Rebalance only ordinary land cells at the end so
+    // roads, rivers, mountains, and the playable topology remain untouched.
+    {
+        std::vector<int> softLand;
+        softLand.reserve(static_cast<std::size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const std::uint8_t biome = outBiomes[static_cast<std::size_t>(i)];
+            if (biome == PLAIN || biome == DESERT || biome == FOREST) {
+                softLand.push_back(i);
+            }
+        }
+
+        const int targetDesert = std::clamp(static_cast<int>(std::lround(static_cast<double>(softLand.size()) * desertCov)), 0, static_cast<int>(softLand.size()));
+        const int targetForest = std::clamp(static_cast<int>(std::lround(static_cast<double>(softLand.size()) * forestCov)), 0, static_cast<int>(softLand.size()) - targetDesert);
+        std::vector<std::pair<float, int>> desertScores;
+        std::vector<std::pair<float, int>> forestScores;
+        desertScores.reserve(softLand.size());
+        forestScores.reserve(softLand.size());
+        for (int cell : softLand) {
+            const int x = cell % w;
+            const int y = cell / w;
+            const float nx = static_cast<float>(x) / static_cast<float>(std::max(1, w - 1));
+            const float ny = static_cast<float>(y) / static_cast<float>(std::max(1, h - 1));
+            const float inland = Clamp01(static_cast<float>(seaDist[static_cast<std::size_t>(cell)]) / (maxD * 0.24f));
+            const float mountainProximity = 1.0f - Clamp01(static_cast<float>(mountainDist[static_cast<std::size_t>(cell)]) / (maxD * 0.18f));
+            const float detail = mapgen::Fbm2D(nx * 4.7f * scale, ny * 4.7f * scale, 3, 2.0f, 0.52f, params_.seed ^ 0x91f2ab37U);
+            const float dryness = 1.0f - moisture[static_cast<std::size_t>(cell)];
+            desertScores.push_back({dryness * 0.62f + inland * 0.20f + (1.0f - height[static_cast<std::size_t>(cell)]) * 0.10f + detail * 0.08f, cell});
+            forestScores.push_back({mountainProximity * 0.44f + moisture[static_cast<std::size_t>(cell)] * 0.34f + inland * 0.10f + height[static_cast<std::size_t>(cell)] * 0.12f + detail * 0.04f, cell});
+        }
+        auto scoreOrder = [](const std::pair<float, int>& lhs, const std::pair<float, int>& rhs) {
+            if (lhs.first != rhs.first) {
+                return lhs.first > rhs.first;
+            }
+            return lhs.second < rhs.second;
+        };
+        std::sort(desertScores.begin(), desertScores.end(), scoreOrder);
+        std::sort(forestScores.begin(), forestScores.end(), scoreOrder);
+        std::unordered_set<int> desertCells;
+        desertCells.reserve(static_cast<std::size_t>(targetDesert));
+        for (int i = 0; i < targetDesert; ++i) {
+            desertCells.insert(desertScores[static_cast<std::size_t>(i)].second);
+        }
+        std::unordered_set<int> forestCells;
+        forestCells.reserve(static_cast<std::size_t>(targetForest));
+        for (const auto& scored : forestScores) {
+            if (static_cast<int>(forestCells.size()) >= targetForest) {
+                break;
+            }
+            if (desertCells.find(scored.second) == desertCells.end()) {
+                forestCells.insert(scored.second);
+            }
+        }
+        for (int cell : softLand) {
+            if (desertCells.find(cell) != desertCells.end()) {
+                outBiomes[static_cast<std::size_t>(cell)] = DESERT;
+            } else if (forestCells.find(cell) != forestCells.end()) {
+                outBiomes[static_cast<std::size_t>(cell)] = FOREST;
+            } else {
+                outBiomes[static_cast<std::size_t>(cell)] = PLAIN;
             }
         }
     }
