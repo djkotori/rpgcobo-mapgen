@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <numeric>
 #include <queue>
@@ -380,6 +381,131 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         GetParam("macroContinentWeight", 0.40),
         GetParam("macroBasinWeight", 0.25));
 
+    // Macro-shape lobes: seeded centers with random rotation/eccentricity plus domain warp,
+    // so silhouettes vary strongly per seed instead of always forming one round island.
+    struct ShapeLobe {
+        float cx = 0.5f;
+        float cy = 0.5f;
+        float cosT = 1.0f;
+        float sinT = 0.0f;
+        float invRx = 1.0f;
+        float invRy = 1.0f;
+        float strength = 1.0f;
+    };
+    std::vector<ShapeLobe> shapeLobes;
+    float shapeWarpAmp = 0.0f;
+    if (mode == MacroMode::Continent) {
+        shapeWarpAmp = static_cast<float>(std::clamp(
+            GetParam("continentWarpAmp", 0.07 + 0.09 * static_cast<double>(ur(rng))), 0.0, 0.30));
+        const int lobeCount = 1 + ((ur(rng) < 0.70f) ? 1 : 0) + ((ur(rng) < 0.40f) ? 1 : 0);
+        const float mainAngle = ur(rng) * 3.14159265f;
+        float prevCx = 0.40f + 0.20f * ur(rng);
+        float prevCy = 0.40f + 0.20f * ur(rng);
+        for (int lobe = 0; lobe < lobeCount; ++lobe) {
+            ShapeLobe lb;
+            if (lobe == 0) {
+                lb.cx = prevCx;
+                lb.cy = prevCy;
+            } else {
+                const float offAngle = ur(rng) * 6.2831853f;
+                const float offDist = 0.16f + 0.16f * ur(rng);
+                lb.cx = std::clamp(prevCx + std::cos(offAngle) * offDist, 0.22f, 0.78f);
+                lb.cy = std::clamp(prevCy + std::sin(offAngle) * offDist, 0.22f, 0.78f);
+                prevCx = lb.cx;
+                prevCy = lb.cy;
+            }
+            const float angle = mainAngle + (ur(rng) - 0.5f) * 1.2f;
+            lb.cosT = std::cos(angle);
+            lb.sinT = std::sin(angle);
+            const float elong = 1.0f + 1.1f * ur(rng);
+            const float sizeScale = (lobe == 0) ? 1.0f : (0.45f + 0.30f * ur(rng));
+            const float baseR = (0.34f / std::sqrt(static_cast<float>(lobeCount))) * sizeScale;
+            lb.invRx = 1.0f / std::max(0.08f, baseR * elong);
+            lb.invRy = 1.0f / std::max(0.08f, baseR / elong);
+            shapeLobes.push_back(lb);
+        }
+    } else if (mode == MacroMode::Archipelago) {
+        // True archipelago: one or two main islands plus smaller ones clustered around them,
+        // chained with thin low-strength connector lobes so the walkable area stays linkable.
+        shapeWarpAmp = static_cast<float>(std::clamp(
+            GetParam("archipelagoWarpAmp", 0.05 + 0.07 * static_cast<double>(ur(rng))), 0.0, 0.30));
+        const int mainCount = 1 + ((ur(rng) < 0.55f) ? 1 : 0);
+        const int smallCount = 3 + static_cast<int>(ur(rng) * 4.0f);
+        const int islandCount = mainCount + smallCount;
+        std::vector<std::pair<float, float>> islandCenters;
+        for (int isl = 0; isl < islandCount; ++isl) {
+            ShapeLobe lb;
+            float anchorX = 0.5f;
+            float anchorY = 0.5f;
+            if (isl == 0) {
+                lb.cx = 0.30f + 0.40f * ur(rng);
+                lb.cy = 0.30f + 0.40f * ur(rng);
+            } else {
+                // Cluster around a random existing island to avoid stranded far-away landmasses.
+                const std::size_t anchorIdx = std::min(
+                    islandCenters.size() - 1,
+                    static_cast<std::size_t>(ur(rng) * static_cast<float>(islandCenters.size())));
+                anchorX = islandCenters[anchorIdx].first;
+                anchorY = islandCenters[anchorIdx].second;
+                const float offAngle = ur(rng) * 6.2831853f;
+                const float offDist = 0.16f + 0.18f * ur(rng);
+                lb.cx = std::clamp(anchorX + std::cos(offAngle) * offDist, 0.14f, 0.86f);
+                lb.cy = std::clamp(anchorY + std::sin(offAngle) * offDist, 0.14f, 0.86f);
+                // Connect to the nearest island so the chain stays tight.
+                float bestD = std::numeric_limits<float>::max();
+                for (const auto& c : islandCenters) {
+                    const float ddx = lb.cx - c.first;
+                    const float ddy = lb.cy - c.second;
+                    const float dd = ddx * ddx + ddy * ddy;
+                    if (dd < bestD) {
+                        bestD = dd;
+                        anchorX = c.first;
+                        anchorY = c.second;
+                    }
+                }
+            }
+            islandCenters.push_back({lb.cx, lb.cy});
+            const float angle = ur(rng) * 3.14159265f;
+            lb.cosT = std::cos(angle);
+            lb.sinT = std::sin(angle);
+            const float elong = 1.0f + 0.8f * ur(rng);
+            const float baseR = (isl < mainCount)
+                ? (0.17f + 0.08f * ur(rng)) / std::sqrt(static_cast<float>(mainCount))
+                : 0.05f + 0.07f * ur(rng);
+            lb.invRx = 1.0f / std::max(0.04f, baseR * elong);
+            lb.invRy = 1.0f / std::max(0.04f, baseR / elong);
+            shapeLobes.push_back(lb);
+
+            if (isl > 0) {
+                // Thin connector lobe toward the anchor island: forms isthmus/islet chains that
+                // keep the archipelago reachable (some drown by noise, leaving narrow straits).
+                const float dxC = lb.cx - anchorX;
+                const float dyC = lb.cy - anchorY;
+                const float dist = std::sqrt(dxC * dxC + dyC * dyC);
+                if (dist > 0.02f) {
+                    ShapeLobe conn;
+                    conn.cx = (lb.cx + anchorX) * 0.5f;
+                    conn.cy = (lb.cy + anchorY) * 0.5f;
+                    conn.cosT = dxC / dist;
+                    conn.sinT = dyC / dist;
+                    conn.invRx = 1.0f / std::max(0.05f, dist * 0.60f);
+                    conn.invRy = 1.0f / 0.045f;
+                    conn.strength = 0.85f;
+                    shapeLobes.push_back(conn);
+                }
+            }
+        }
+    }
+
+    // Basin interior: a seeded mid-radius ring bias encourages a connected land annulus around
+    // the inner sea while keeping the relief noise-driven.
+    float basinRingR0 = 0.60f;
+    float basinRingWidth = 0.26f;
+    if (mode == MacroMode::Basin) {
+        basinRingR0 = 0.52f + 0.14f * ur(rng);
+        basinRingWidth = 0.24f + 0.12f * ur(rng);
+    }
+
     std::vector<float> height(static_cast<std::size_t>(n), 0.0f);
     std::vector<float> ridge(static_cast<std::size_t>(n), 0.0f);
 
@@ -396,21 +522,30 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
             const float worley = 1.0f - mapgen::Worley2D(nx * static_cast<float>(w), ny * static_cast<float>(h), 18.0f / scale, params_.seed ^ 0x77aab003U);
             float radial = 1.0f;
 
-            if (mode == MacroMode::Archipelago) {
-                const float cx = nx - 0.5f;
-                const float cy = ny - 0.5f;
-                const float d = std::sqrt(cx * cx + cy * cy);
-                radial = 1.0f - Clamp01((d - 0.15f) / 0.55f);
-            } else if (mode == MacroMode::Continent) {
-                const float cx = nx - 0.48f;
-                const float cy = ny - 0.52f;
-                const float d = std::sqrt(cx * cx + cy * cy);
-                radial = 1.0f - 0.6f * Clamp01((d - 0.05f) / 0.8f);
+            if (mode == MacroMode::Basin) {
+                // Interior relief is noise-driven (no central peak); the rim is raised separately.
+                const float r = BasinRoundMetric(nx, ny);
+                const float ringT = 1.0f - Clamp01(std::abs(r - basinRingR0) / basinRingWidth);
+                radial = 0.66f + 0.28f * ringT;
             } else {
-                const float cx = nx - 0.5f;
-                const float cy = ny - 0.5f;
-                const float d = std::sqrt(cx * cx + cy * cy);
-                radial = 0.6f + 0.4f * Clamp01((0.9f - d) / 0.9f);
+                // Domain-warped anisotropic lobes: irregular, elongated, multi-lobed landmasses.
+                const float warpX = (mapgen::Fbm2D(nx * 3.1f, ny * 3.1f, 4, 2.0f, 0.5f, params_.seed ^ 0x3c6ef372U) - 0.5f) * 2.0f * shapeWarpAmp;
+                const float warpY = (mapgen::Fbm2D(nx * 3.1f, ny * 3.1f, 4, 2.0f, 0.5f, params_.seed ^ 0xa54ff53aU) - 0.5f) * 2.0f * shapeWarpAmp;
+                const float wxp = nx + warpX;
+                const float wyp = ny + warpY;
+                float best = 0.0f;
+                for (const ShapeLobe& lb : shapeLobes) {
+                    const float dx0 = wxp - lb.cx;
+                    const float dy0 = wyp - lb.cy;
+                    const float rx = (dx0 * lb.cosT + dy0 * lb.sinT) * lb.invRx;
+                    const float ry = (-dx0 * lb.sinT + dy0 * lb.cosT) * lb.invRy;
+                    const float dNorm = std::sqrt(rx * rx + ry * ry);
+                    const float lobeMask = ((mode == MacroMode::Continent)
+                        ? 1.0f - 0.6f * Clamp01((dNorm - 0.30f) / 1.15f)
+                        : 1.0f - Clamp01((dNorm - 0.55f) / 0.90f)) * lb.strength;
+                    best = std::max(best, lobeMask);
+                }
+                radial = (mode == MacroMode::Continent) ? best : (0.30f + 0.70f * best);
             }
 
             base = base * 0.62f + detail * 0.18f + worley * 0.20f;
@@ -427,6 +562,34 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
     const float invRange = (hmax > hmin) ? (1.0f / (hmax - hmin)) : 1.0f;
     for (int i = 0; i < n; ++i) {
         height[static_cast<std::size_t>(i)] = Clamp01((height[static_cast<std::size_t>(i)] - hmin) * invRange);
+    }
+
+    if (n > 4) {
+        // Re-anchor sea level by quantile so randomized shapes keep a stable, mode-typical land ratio.
+        float landTarget = 0.5f;
+        if (mode == MacroMode::Continent) {
+            landTarget = static_cast<float>(std::clamp(
+                GetParam("continentLandRatio", 0.45 + 0.15 * static_cast<double>(ur(rng))), 0.36, 0.64));
+        } else if (mode == MacroMode::Archipelago) {
+            landTarget = static_cast<float>(std::clamp(
+                GetParam("archipelagoLandRatio", 0.44 + 0.10 * static_cast<double>(ur(rng))), 0.32, 0.60));
+        } else {
+            // Before the rim raise, so the final basin land ratio ends up higher than this target.
+            landTarget = static_cast<float>(std::clamp(
+                GetParam("basinLandRatio", 0.36 + 0.08 * static_cast<double>(ur(rng))), 0.30, 0.60));
+        }
+        std::vector<float> sorted(height);
+        const int k = std::clamp(static_cast<int>(std::round((1.0f - landTarget) * static_cast<float>(n))), 1, n - 2);
+        std::nth_element(sorted.begin(), sorted.begin() + k, sorted.end());
+        const float tq = sorted[static_cast<std::size_t>(k)];
+        if (tq > 0.001f && tq < 0.999f) {
+            for (int i = 0; i < n; ++i) {
+                float& hv = height[static_cast<std::size_t>(i)];
+                hv = (hv < tq)
+                    ? seaLevel * (hv / tq)
+                    : seaLevel + (1.0f - seaLevel) * ((hv - tq) / (1.0f - tq));
+            }
+        }
     }
 
     {
@@ -729,16 +892,73 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         }
     }
 
-    for (int i = 0; i < n; ++i) {
-        if (outBiomes[static_cast<std::size_t>(i)] == SEA) {
-            continue;
+    {
+        // Mountain belts (all modes): ranges follow a seeded anisotropic ridge field instead of a
+        // fixed height threshold, so they neither pile up at the landmass center nor flood whole
+        // regions; coverage is capped via quantile selection and direction varies per seed.
+        const float beltAngle = ur(rng) * 3.14159265f;
+        const float beltCos = std::cos(beltAngle);
+        const float beltSin = std::sin(beltAngle);
+        const float beltFreqAlong = 1.6f + 1.4f * ur(rng);
+        const float beltFreqAcross = 4.6f + 2.8f * ur(rng);
+        float mountainCoverage = 0.12f;
+        if (mode == MacroMode::Continent) {
+            mountainCoverage = static_cast<float>(std::clamp(
+                GetParam("continentMountainCoverage", 0.09 + 0.07 * static_cast<double>(ur(rng))), 0.03, 0.30));
+        } else if (mode == MacroMode::Archipelago) {
+            mountainCoverage = static_cast<float>(std::clamp(
+                GetParam("archipelagoMountainCoverage", 0.06 + 0.06 * static_cast<double>(ur(rng))), 0.02, 0.30));
+        } else {
+            mountainCoverage = static_cast<float>(std::clamp(
+                GetParam("basinMountainCoverage", 0.08 + 0.05 * static_cast<double>(ur(rng))), 0.02, 0.30));
         }
-        const float hv = height[static_cast<std::size_t>(i)];
-        const float rv = 1.0f - ridge[static_cast<std::size_t>(i)];
-        if (hv > 0.91f || (hv > 0.84f && rv > ridgeStrength * 0.74f)) {
-            outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(EXMOUNTAIN);
-        } else if (hv > 0.80f || (hv > 0.72f && rv > ridgeStrength * 0.84f)) {
-            outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(MOUNTAIN);
+
+        const std::vector<int> seaDistForMtn = MultiSourceDistance(outBiomes, w, h, {SEA});
+        std::vector<std::pair<float, int>> mtnScores;
+        mtnScores.reserve(static_cast<std::size_t>(n / 4));
+        int landCount = 0;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const int i = Index(x, y, w);
+                if (outBiomes[static_cast<std::size_t>(i)] == SEA) {
+                    continue;
+                }
+                ++landCount;
+                // Keep pre-placed mountains (e.g. the basin rim wall) out of the candidate pool.
+                if (IsMountainLike(outBiomes[static_cast<std::size_t>(i)])) {
+                    continue;
+                }
+                if (seaDistForMtn[static_cast<std::size_t>(i)] <= 2) {
+                    continue;
+                }
+                const float hv = height[static_cast<std::size_t>(i)];
+                if (hv < seaLevel + 0.03f) {
+                    continue;
+                }
+                const float nx = static_cast<float>(x) / static_cast<float>(std::max(1, w - 1));
+                const float ny = static_cast<float>(y) / static_cast<float>(std::max(1, h - 1));
+                const float u = nx * beltCos + ny * beltSin;
+                const float v = -nx * beltSin + ny * beltCos;
+                const float beltRaw = mapgen::Fbm2D(u * beltFreqAlong * scale, v * beltFreqAcross * scale, 4, 2.0f, 0.5f, params_.seed ^ 0x51f2bd09U);
+                const float belt = 1.0f - std::abs(2.0f * beltRaw - 1.0f);
+                const float rv = 1.0f - ridge[static_cast<std::size_t>(i)];
+                const float score = belt * 0.52f + hv * 0.26f + rv * ridgeStrength * 0.40f;
+                mtnScores.push_back({score, i});
+            }
+        }
+
+        const int target = std::min(static_cast<int>(mtnScores.size()), static_cast<int>(static_cast<float>(landCount) * mountainCoverage));
+        if (target > 0) {
+            auto byScoreDesc = [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                return a.first > b.first;
+            };
+            std::nth_element(mtnScores.begin(), mtnScores.begin() + (target - 1), mtnScores.end(), byScoreDesc);
+            const int exCount = std::max(1, static_cast<int>(static_cast<float>(target) * 0.32f));
+            std::nth_element(mtnScores.begin(), mtnScores.begin() + (exCount - 1), mtnScores.begin() + target, byScoreDesc);
+            for (int k = 0; k < target; ++k) {
+                const int i = mtnScores[static_cast<std::size_t>(k)].second;
+                outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>((k < exCount) ? EXMOUNTAIN : MOUNTAIN);
+            }
         }
     }
 
@@ -1082,6 +1302,130 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
 
                 for (int i : fill) {
                     outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>((height[static_cast<std::size_t>(i)] > 0.86f) ? EXMOUNTAIN : MOUNTAIN);
+                }
+            }
+        }
+    }
+
+    {
+        // Mountain passes: carve minimal gaps through ranges so they never isolate land
+        // regions; water-separated islands are left to the bridge/road stages.
+        const int passMinCompArea = std::max(8, n / 2000);
+        std::vector<int> comp(static_cast<std::size_t>(n), -1);
+        std::vector<int> compArea;
+        const std::array<int, 4> cdx = {1, -1, 0, 0};
+        const std::array<int, 4> cdy = {0, 0, 1, -1};
+
+        auto isOpenLand = [&outBiomes](int i) {
+            const std::uint8_t b = outBiomes[static_cast<std::size_t>(i)];
+            return !IsWater(b) && !IsMountainLike(b);
+        };
+
+        for (int i = 0; i < n; ++i) {
+            if (comp[static_cast<std::size_t>(i)] >= 0 || !isOpenLand(i)) {
+                continue;
+            }
+            const int id = static_cast<int>(compArea.size());
+            int area = 0;
+            std::queue<int> q;
+            q.push(i);
+            comp[static_cast<std::size_t>(i)] = id;
+            while (!q.empty()) {
+                const int cur = q.front();
+                q.pop();
+                ++area;
+                const int cx = cur % w;
+                const int cy = cur / w;
+                for (int k = 0; k < 4; ++k) {
+                    const int nx2 = cx + cdx[static_cast<std::size_t>(k)];
+                    const int ny2 = cy + cdy[static_cast<std::size_t>(k)];
+                    if (!InBounds(nx2, ny2, w, h)) {
+                        continue;
+                    }
+                    const int ni = Index(nx2, ny2, w);
+                    if (comp[static_cast<std::size_t>(ni)] >= 0 || !isOpenLand(ni)) {
+                        continue;
+                    }
+                    comp[static_cast<std::size_t>(ni)] = id;
+                    q.push(ni);
+                }
+            }
+            compArea.push_back(area);
+        }
+
+        if (compArea.size() > 1) {
+            int mainComp = 0;
+            for (std::size_t c = 1; c < compArea.size(); ++c) {
+                if (compArea[c] > compArea[static_cast<std::size_t>(mainComp)]) {
+                    mainComp = static_cast<int>(c);
+                }
+            }
+
+            // 0-1 BFS over non-water cells from the main component: passable cells cost 0,
+            // mountain cells cost 1, so traced paths carve as little range as possible.
+            const int kInf = std::numeric_limits<int>::max();
+            std::vector<int> dist(static_cast<std::size_t>(n), kInf);
+            std::vector<int> parent(static_cast<std::size_t>(n), -1);
+            std::deque<int> dq;
+            for (int i = 0; i < n; ++i) {
+                if (comp[static_cast<std::size_t>(i)] == mainComp) {
+                    dist[static_cast<std::size_t>(i)] = 0;
+                    dq.push_back(i);
+                }
+            }
+            while (!dq.empty()) {
+                const int cur = dq.front();
+                dq.pop_front();
+                const int cx = cur % w;
+                const int cy = cur / w;
+                for (int k = 0; k < 4; ++k) {
+                    const int nx2 = cx + cdx[static_cast<std::size_t>(k)];
+                    const int ny2 = cy + cdy[static_cast<std::size_t>(k)];
+                    if (!InBounds(nx2, ny2, w, h)) {
+                        continue;
+                    }
+                    const int ni = Index(nx2, ny2, w);
+                    const std::uint8_t b = outBiomes[static_cast<std::size_t>(ni)];
+                    if (IsWater(b)) {
+                        continue;
+                    }
+                    const int step = IsMountainLike(b) ? 1 : 0;
+                    const int nd = dist[static_cast<std::size_t>(cur)] + step;
+                    if (nd >= dist[static_cast<std::size_t>(ni)]) {
+                        continue;
+                    }
+                    dist[static_cast<std::size_t>(ni)] = nd;
+                    parent[static_cast<std::size_t>(ni)] = cur;
+                    if (step == 0) {
+                        dq.push_front(ni);
+                    } else {
+                        dq.push_back(ni);
+                    }
+                }
+            }
+
+            // Pick the cheapest entry cell per stranded component, then carve back to the main one.
+            std::vector<int> bestCell(compArea.size(), -1);
+            for (int i = 0; i < n; ++i) {
+                const int c = comp[static_cast<std::size_t>(i)];
+                if (c < 0 || c == mainComp || dist[static_cast<std::size_t>(i)] == kInf) {
+                    continue;
+                }
+                if (compArea[static_cast<std::size_t>(c)] < passMinCompArea) {
+                    continue;
+                }
+                if (bestCell[static_cast<std::size_t>(c)] < 0 ||
+                    dist[static_cast<std::size_t>(i)] < dist[static_cast<std::size_t>(bestCell[static_cast<std::size_t>(c)])]) {
+                    bestCell[static_cast<std::size_t>(c)] = i;
+                }
+            }
+            for (std::size_t c = 0; c < bestCell.size(); ++c) {
+                int cur = bestCell[c];
+                while (cur >= 0) {
+                    if (IsMountainLike(outBiomes[static_cast<std::size_t>(cur)])) {
+                        outBiomes[static_cast<std::size_t>(cur)] = static_cast<std::uint8_t>(PLAIN);
+                    }
+                    cur = parent[static_cast<std::size_t>(cur)];
                 }
             }
         }

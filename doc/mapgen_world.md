@@ -70,7 +70,10 @@ enum MapGenBiomeID
 2) 低周波ノイズで標高場を作成
 - fBm(Perlin/Simplex) を使い `height(x,y)` を作る（低周波主体）。
 - Worley 距離を混ぜて、入り江・半島のギザつきと大地の塊感を追加。
-- `height` をヒストグラム正規化して sea level が狙いの陸率になるよう調整する。
+- `continent` モードでは、seed からランダムな中心・回転・離心率を持つ 1～3 個の楕円ローブ + ドメインワープで大陸シルエットを決定する（丸い単一大陸にならず、生成ごとに形が大きく変わる）。
+- `archipelago` モードでは、主島 1～2 個 + 周辺にクラスタ配置された小島 3～6 個のローブで群島を構成する。島間には低強度の細い連結ローブを張り、地峡や小島チェーンとして到達性を保つ（ノイズで一部は水没し海峡になる）。
+- `basin` モードの内部は中央ピークを持たないノイズ主体の起伏とし、seed ごとにランダムな中間半径の環状帯をわずかに持ち上げて「内海を囲む連続した陸のリング」を誘導する。
+- `height` をヒストグラム正規化して sea level が狙いの陸率になるよう調整する。全モードで分位点により海面を再アンカーし、シルエット形状によらず陸率を安定させる。
 
 3) 海・陸の一次分割
 - `height < seaLevel` を `SEA` 候補とする。
@@ -78,8 +81,9 @@ enum MapGenBiomeID
 
 4) 地形骨格（山・外周壁・峠）の生成
 - `height` と ridge noise から山稜候補を抽出し、尾根の細線化で主稜線を得る。
-- `basin` モードでは外周に `MOUNTAIN/EXMOUNTAIN` のリングを優先生成する。
-- 山で完全閉塞しすぎないよう、峠セル（後で ROAD 通過可）を一定間隔で開ける。
+- 全モードで、標高しきい値ではなく「ランダム方位の帯状リッジノイズ + 標高 + Worley 尾根」のスコア上位セルを山に割り当てる（分位点選択で被覆率を保証）。山脈の位置・走向が seed ごとに変わり、中央集中や山の氾濫を避ける。
+- `basin` モードでは外周に `MOUNTAIN/EXMOUNTAIN` のリングを優先生成する（リングは山被覆率の分位点選択から除外）。
+- 山で完全閉塞しすぎないよう、峠セル（後で ROAD 通過可）を一定間隔で開ける。孤立した陸領域には 0-1 BFS で最小限の山を削って峠を通し、到達性を保証する。
 
 5) 河川と湖の生成
 - 山地/高標高点から 1～3 本の主流を選び、勾配降下 + ノイズで蛇行させて流路追跡。
@@ -118,6 +122,14 @@ enum MapGenBiomeID
 - `seaLevel`: 0.48（陸率目安 40～60%）
 - `macroModeWeights`: `archipelago=0.35, continent=0.40, basin=0.25`
 - `ridgeStrength`: 0.55
+- `continentLandRatio`: 0.45..0.60（乱択。continent の陸率ターゲット。分位点で海面を再アンカー）
+- `continentWarpAmp`: 0.07..0.16（乱択。大陸シルエットのドメインワープ量）
+- `continentMountainCoverage`: 0.09..0.16（乱択。continent の山被覆率ターゲット）
+- `archipelagoLandRatio`: 0.44..0.54（乱択。archipelago の陸率ターゲット）
+- `archipelagoWarpAmp`: 0.05..0.12（乱択。群島シルエットのドメインワープ量）
+- `archipelagoMountainCoverage`: 0.06..0.12（乱択。archipelago の山被覆率ターゲット）
+- `basinLandRatio`: 0.36..0.44（乱択。basin の外周隆起前の陸率ターゲット。最終陸率はこれより高くなる）
+- `basinMountainCoverage`: 0.08..0.13（乱択。basin 内部の山被覆率ターゲット。外周壁は含まない）
 - `riverDensity`: 1.0（河川密度スカラー。主流・支流・湖の生成量に乗算）
 - `mountainChainAttempts`: 10（近距離の山塊同士を山脈状に接続する試行回数）
 - `mountainChainConnectDist`: 18（接続対象とする山塊間距離の上限セル）
