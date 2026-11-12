@@ -614,6 +614,10 @@ Point NearestFootprintPoint(
 TownMapImageGenerator::TownMapImageGenerator(MapGenParams params) : MapImageGenerator(std::move(params)) {}
 
 MapGenColor TownMapImageGenerator::BiomeToColor(std::uint8_t biome) const {
+    return SettlementBiomeColor(biome);
+}
+
+MapGenColor TownMapImageGenerator::SettlementBiomeColor(std::uint8_t biome) {
     switch (biome) {
         case PLAIN:      return {104, 146, 86};
         case DESERT:     return {196, 168, 103};
@@ -638,6 +642,20 @@ MapGenColor TownMapImageGenerator::BiomeToColor(std::uint8_t biome) const {
 }
 
 bool TownMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
+    if(GetParam("assetFoundation",0)>0) {
+        if(params_.width<32 || params_.depth<32) {outError="Town map size must be at least 32x32";return false;}
+        outPlan.Reset(params_.width,params_.depth,params_.seed,"town");
+        const auto site=static_cast<SettlementSite>(std::clamp(static_cast<int>(GetParam("settlementSite",params_.seed%7)),0,6));
+        const int rotation=std::clamp(static_cast<int>(GetParam("siteRotation",(params_.seed/7)%4)),0,3);
+        std::vector<std::uint8_t> footprint,structure;
+        outPlan.biomes.assign(params_.width*params_.depth,PLAIN);
+        PrepareSettlementSite(outPlan,footprint,structure,site,rotation,
+            static_cast<std::uint8_t>(site==SettlementSite::Oasis?DESERT:PLAIN),false,false,false,
+            ReadSettlementTerrainOptions(params_));
+        outPlan.archetype="urban_growth";
+        outPlan.cityType=TownCityTypeName(ChooseCityType(params_));
+        return true;
+    }
     const int width = params_.width;
     const int height = params_.depth;
     if (width < 32 || height < 32) {
@@ -663,7 +681,6 @@ bool TownMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
     const double pavingTargetRatio = std::clamp(
         GetParam("pavingRatio", GetParam("pavingRate", visualStyle.pavingRatio)), 0.0, 1.0);
     const bool pavedCity = !villageLayout && cityType == TownCityType::PavedCity;
-    const bool fortifiedCity = !villageLayout && (cityType == TownCityType::WalledCity || cityType == TownCityType::CastleTown);
     // Keep the default settlement density roughly stable as maps grow. The
     // upper caps are deliberately generous: a 1024x1024 town must gain real
     // neighbourhoods rather than stretching the 160x160 layout into empty
@@ -775,7 +792,8 @@ bool TownMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
                 static_cast<double>(CandidateSeed(params_.seed, 1201) % 10000U) / 10000.0 < waterChance);
         const bool optionalPond = (site == SettlementSite::Plains || site == SettlementSite::Forest) &&
             static_cast<double>(CandidateSeed(params_.seed, 1203) % 10000U) / 10000.0 < waterChance;
-        PrepareSettlementSite(candidate, footprint, structure, site, siteRotation, groundTile, villageLayout, optionalRiver, optionalPond);
+        PrepareSettlementSite(candidate, footprint, structure, site, siteRotation, groundTile, villageLayout,
+            optionalRiver, optionalPond, ReadSettlementTerrainOptions(params_));
         const int footprintCells = std::accumulate(footprint.begin(), footprint.end(), 0);
         if (footprintCells < area / 8) continue;
         int buildableLand = 0;
@@ -915,7 +933,11 @@ bool TownMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         std::vector<Point> entrances;
         std::vector<int> sideOrder{0, 1, 2, 3};
         std::shuffle(sideOrder.begin(), sideOrder.end(), rng);
-        const bool outerWall = mode == TownMode::Walled || fortifiedCity;
+        const bool fortifiedCity = !villageLayout &&
+            (cityType == TownCityType::WalledCity || cityType == TownCityType::CastleTown);
+        const bool outerWall = params_.extra.count("wallHeight")
+            ? GetParam("wallHeight", 0.0) > 0.0
+            : mode == TownMode::Walled || fortifiedCity;
         const int entranceCount = std::min(outerWall ? 2 : ModeEntranceCount(mode), static_cast<int>(boundary.size()));
         const std::array<Point, 4> sideTargets{{
             {centerX, border}, {centerX, height - border - 1}, {border, centerY}, {width - border - 1, centerY},

@@ -38,6 +38,15 @@ struct MapPlanRegion {
     std::string hearth;
     int linkedRegionId = -1;
     int width = 0;
+    int rotation = 0;
+    int doorX = -1;
+    int doorY = -1;
+    int frontageWidth = 0;
+    int growthStage = 0;
+    // Native castle fixtures are planned from room semantics, not PNG colors.
+    int objectType = -1;
+    int objectVariant = -1;
+    int objectHeight = 0;
 };
 
 struct MapPlanPavingStage {
@@ -86,6 +95,8 @@ struct MapPlan {
     std::vector<MapPlanPavingStage> pavingStages;
     std::string environment;
     std::vector<std::uint8_t> biomes;
+    std::vector<int> heightOffsets;
+    std::vector<int> shoreCuts;
     // Town/village development area, independent of the full-canvas terrain.
     std::vector<std::uint8_t> settlementMask;
     // Castle construction intent, kept independently of the final tiles so
@@ -93,6 +104,7 @@ struct MapPlan {
     // 0: other, 1: moat, 2: curtain wall, 3: inner wall,
     // 4: authorized moat crossing, 5: outer gate, 6: inner gate.
     std::vector<std::uint8_t> castleDefenseMask;
+    std::vector<std::uint8_t> castleStreetMask;
     std::vector<MapPlanMarker> markers;
     std::vector<MapPlanRegion> regions;
     double qualityScore = 0.0;
@@ -125,8 +137,11 @@ struct MapPlan {
         pavingStages.clear();
         environment.clear();
         biomes.clear();
+        heightOffsets.clear();
+        shoreCuts.clear();
         settlementMask.clear();
         castleDefenseMask.clear();
+        castleStreetMask.clear();
         markers.clear();
         regions.clear();
         qualityScore = 0.0;

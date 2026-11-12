@@ -7,10 +7,15 @@
 #include "WorldMapImageGenerator.h"
 #include "VillageMapImageGenerator.h"
 #include "utils.h"
+#include "AssetFoundation.h"
+#include "SettlementRelief.h"
+#include "SettlementDecoration.h"
+#include "CastleSettlement.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -83,6 +88,29 @@ bool ParseParamKV(const std::string& token, std::string& outKey, double& outValu
     return true;
 }
 
+bool ReadNumericParams(const std::filesystem::path& path, CliOptions& opt, std::string& error) {
+    std::ifstream input(path);
+    auto fail = [&]() { error = "Invalid numeric parameter file: " + path.string(); return false; };
+    if (!input) { error = "Cannot open parameter file: " + path.string(); return false; }
+    char token;
+    if (!(input >> token) || token != '{') return fail();
+    input >> std::ws;
+    if (input.peek() != '}') for (;;) {
+        std::string key;
+        double value;
+        if (input.peek() != '"' || !(input >> std::quoted(key)) || key.empty() ||
+            !(input >> token) || token != ':' || !(input >> value) || !std::isfinite(value)) return fail();
+        opt.extra[key] = value;
+        input >> std::ws;
+        if (input.peek() == '}') break;
+        if (!(input >> token) || token != ',') return fail();
+        input >> std::ws;
+    }
+    if (!(input >> token) || token != '}') return fail();
+    input >> std::ws;
+    return input.eof() || fail();
+}
+
 bool ParseArgs(int argc, char** argv, CliOptions& opt, std::string& outError) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -123,6 +151,9 @@ bool ParseArgs(int argc, char** argv, CliOptions& opt, std::string& outError) {
                 return false;
             }
             opt.extra[key] = value;
+        } else if (a == "--params-file") {
+            const char* v = requireNext("--params-file");
+            if (v == nullptr || !ReadNumericParams(v, opt, outError)) return false;
         } else if (a == "-dir") {
             const char* v = requireNext("-dir");
             if (v == nullptr) return false;
@@ -477,7 +508,17 @@ bool WritePlanFile(const std::filesystem::path& path, const MapPlan& plan, const
         if (i % static_cast<std::size_t>(std::max(1, plan.width)) == 0) ofs << "\n    ";
         ofs << static_cast<int>(plan.biomes[i]);
     }
-    ofs << "\n  ],\n  \"settlementMask\": [";
+    ofs << "\n  ],\n  \"heightOffsets\": [";
+    for (std::size_t i = 0; i < plan.heightOffsets.size(); ++i) {
+        if (i) ofs << ',';
+        ofs << plan.heightOffsets[i];
+    }
+    ofs << "],\n  \"shoreCuts\": [";
+    for (std::size_t i = 0; i < plan.shoreCuts.size(); ++i) {
+        if (i) ofs << ',';
+        ofs << plan.shoreCuts[i];
+    }
+    ofs << "],\n  \"settlementMask\": [";
     for (std::size_t i = 0; i < plan.settlementMask.size(); ++i) {
         if (i != 0) ofs << ',';
         if (i % static_cast<std::size_t>(std::max(1, plan.width)) == 0) ofs << "\n    ";
@@ -489,6 +530,8 @@ bool WritePlanFile(const std::filesystem::path& path, const MapPlan& plan, const
         if (i % static_cast<std::size_t>(std::max(1, plan.width)) == 0) ofs << "\n    ";
         ofs << static_cast<int>(plan.castleDefenseMask[i]);
     }
+    ofs << "\n  ],\n  \"castleStreetMask\": [";
+    for(std::size_t i=0;i<plan.castleStreetMask.size();++i){if(i)ofs<<',';ofs<<static_cast<int>(plan.castleStreetMask[i]);}
     ofs << "\n  ],\n  \"markers\": [\n";
     const auto regionArea = [](const MapPlanRegion& region) {
         return std::max(0, region.x1 - region.x0 + 1) * std::max(0, region.y1 - region.y0 + 1);
@@ -585,7 +628,14 @@ bool WritePlanFile(const std::filesystem::path& path, const MapPlan& plan, const
             << ", \"waterSource\": \"" << JsonEscape(region.waterSource) << "\""
             << ", \"hearth\": \"" << JsonEscape(region.hearth) << "\""
             << ", \"linkedRegionId\": " << region.linkedRegionId
-            << ", \"width\": " << region.width << "}";
+            << ", \"width\": " << region.width
+            << ", \"rotation\": " << region.rotation
+            << ", \"doorX\": " << region.doorX << ", \"doorY\": " << region.doorY
+            << ", \"frontageWidth\": " << region.frontageWidth
+            << ", \"growthStage\": " << region.growthStage
+            << ", \"objectType\": " << region.objectType
+            << ", \"objectVariant\": " << region.objectVariant
+            << ", \"objectHeight\": " << region.objectHeight << "}";
     }
     ofs << "\n  ]\n}\n";
     return true;
@@ -625,16 +675,34 @@ int main(int argc, char** argv) {
     params.depth = opt.depth;
     params.seed = opt.seed;
     params.extra = opt.extra;
+    const bool foundation = params.extra.count("assetFoundation") && params.extra.at("assetFoundation") > 0;
+    if (foundation && opt.type != "village" && opt.type != "town" && opt.type != "castle") {
+        std::cerr << "Argument error: assetFoundation requires village, town or castle\n";
+        return 1;
+    }
+    if (foundation && opt.type == "castle" && params.extra.count("wallHeight") && params.extra.at("wallHeight")<=0) {
+        params.extra["outerWallDefenseStrength"] = 0.0;
+        params.extra.erase("outerDefense");
+    }
     const MapTypeSpec* type = FindMapType(opt.type);
-    std::unique_ptr<MapImageGenerator> generator = type->create(std::move(params));
+    std::unique_ptr<MapImageGenerator> generator = type->create(params);
 
     MapPlan plan;
-    if (!generator->Generate(plan, error)) {
+    if (!(foundation && opt.type=="castle" ? GenerateCastleSettlement(plan,params,error) : generator->Generate(plan, error))) {
         std::cerr << "Generation failed: " << error << '\n';
         return 2;
     }
     plan.type = opt.type;
-    const MapQualityMetrics quality = EvaluateMapQuality(plan);
+    if (foundation && opt.type!="castle" && !BuildAssetFoundation(plan, params, error)) {
+        std::cerr << "Foundation generation failed: " << error << '\n';
+        return 2;
+    }
+    if (foundation && (plan.type == "village" || plan.type == "town"))
+        ApplySettlementRelief(plan, static_cast<int>(std::round(params.extra.count("terrainRelief") ? params.extra.at("terrainRelief") : (plan.type=="town"?2:4))));
+    if (foundation && (plan.type == "village" || plan.type == "town")) ApplySettlementShore(plan);
+    if (foundation && (plan.type == "village" || plan.type == "town"))
+        ApplySettlementDecoration(plan, params.extra.count("countryWealth") ? params.extra.at("countryWealth") : 1.0, params);
+    const MapQualityMetrics quality = foundation ? EvaluateAssetFoundation(plan) : EvaluateMapQuality(plan);
     PrintQuality(quality);
 
     std::filesystem::create_directories(opt.outDir);
