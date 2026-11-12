@@ -24,9 +24,18 @@ const char* SettlementSiteFacility(SettlementSite site) {
     return names[static_cast<int>(site)];
 }
 
+SettlementTerrainOptions ReadSettlementTerrainOptions(const MapGenParams& params) {
+    SettlementTerrainOptions terrain;
+    if (const auto it=params.extra.find("terrainProtrusion");it!=params.extra.end())
+        terrain.protrusionPercent=it->second;
+    if (const auto it=params.extra.find("terrainSmoothness");it!=params.extra.end())
+        terrain.smoothnessPercent=it->second;
+    return terrain;
+}
+
 namespace {
 struct Point { double u, v, width; };
-struct Course { Point a, b; int kind; }; // 0 dry valley, 1 stream, 2 drowned valley
+struct Course { Point a, b; int kind; bool branch; }; // 0 dry valley, 1 stream, 2 drowned valley
 struct Fan { double u, v, du, dv, length, spread, height; };
 
 std::pair<double, double> Rotate(double u, double v, int rotation) {
@@ -51,7 +60,13 @@ double Noise(double u, double v, double frequency, std::uint32_t seed) {
 Point Mix(const Point& a, const Point& b, double t) {
     return {a.u + (b.u - a.u) * t, a.v + (b.v - a.v) * t, a.width + (b.width - a.width) * t};
 }
-std::vector<Point> AddCourse(std::vector<Course>& result, std::vector<Point> points, int kind) {
+Point ScaleReach(Point tip, const Point& root, double reach) {
+    const auto scaled=Mix(root,tip,reach);
+    tip.u=scaled.u;
+    tip.v=scaled.v;
+    return tip;
+}
+std::vector<Point> AddCourse(std::vector<Course>& result, std::vector<Point> points, int kind, bool branch) {
     // Controls already come from a seeded drainage graph. Return the smoothed
     // centreline so tributaries attach to the actual bed, not a displaced knot.
     for (int pass = 0; pass < 2; ++pass) {
@@ -63,7 +78,7 @@ std::vector<Point> AddCourse(std::vector<Course>& result, std::vector<Point> poi
         rounded.push_back(points.back());
         points = std::move(rounded);
     }
-    for (std::size_t i = 1; i < points.size(); ++i) result.push_back({points[i - 1], points[i], kind});
+    for (std::size_t i = 1; i < points.size(); ++i) result.push_back({points[i - 1], points[i], kind, branch});
     return points;
 }
 
@@ -87,8 +102,8 @@ struct TerrainSkeleton {
     double coastSlope = 1;
     Point basin{}, pond{};
 
-    std::vector<Point> Trace(std::vector<Point> points, int kind) {
-        return AddCourse(courses, std::move(points), kind);
+    std::vector<Point> Trace(std::vector<Point> points, int kind, bool branch=false) {
+        return AddCourse(courses, std::move(points), kind, branch);
     }
     void Deposit(Point from, Point to, Dice& dice, double scale = 1.0) {
         const double du = to.u-from.u, dv = to.v-from.v;
@@ -105,7 +120,8 @@ struct TerrainSkeleton {
     }
 };
 
-TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extraRiver, bool extraPond) {
+TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extraRiver, bool extraPond,
+    double protrusion) {
     TerrainSkeleton shape;
     Dice dice{seed ^ (0x713a51c9U + static_cast<std::uint32_t>(site)*0x9e3779b9U)};
     if (site == SettlementSite::Coast) {
@@ -116,12 +132,13 @@ TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extra
             const double v = static_cast<double>(n)/(knots-1);
             shape.coast.push_back(std::clamp(shore+tilt*(v-.5)+dice.Range(-amplitude,amplitude),.56,.91));
         }
-        for (int n = 0; n < mouths; ++n) {
+        for (int n = 0; protrusion>0 && n < mouths; ++n) {
             const double v = .10+.80*(n+dice.Range(.15,.85))/mouths;
             const double bank = shape.CoastAt(v), reach = dice.Range(.07,.23), mouthWidth = dice.Range(.035,.085);
             const Point head{std::max(.50,bank-reach),v+dice.Range(-.10,.10),dice.Range(.013,.030)};
-            const auto channel = shape.Trace({head,{bank-.035,v,mouthWidth},
-                {1.04,v+dice.Range(-.12,.12),mouthWidth*dice.Range(1.2,2.1)}},2);
+            const Point mouth{bank-.035,v,mouthWidth};
+            const auto channel = shape.Trace({ScaleReach(head,mouth,protrusion),mouth,
+                {1.04,v+dice.Range(-.12,.12),mouthWidth*dice.Range(1.2,2.1)}},2,true);
             shape.Deposit(Along(channel,.30),Along(channel,.60),dice);
         }
     } else if (site == SettlementSite::Lake) {
@@ -136,20 +153,22 @@ TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extra
         }
         const auto trunk = shape.Trace(controls,2);
         shape.basin = Along(trunk,.5);
-        for (int n = 0; n < branches; ++n) {
+        for (int n = 0; protrusion>0 && n < branches; ++n) {
             const Point join = Along(trunk,.10+.80*(n+dice.Range(.1,.9))/branches);
             const Point head{std::max(.49,join.u-dice.Range(.14,.32)),
                 std::clamp(join.v+dice.Range(-.14,.14),.10,.90),dice.Range(.016,.032)};
             Point bend = Mix(head,join,dice.Range(.35,.65));
             bend.v += dice.Range(-.055,.055); bend.width = join.width*dice.Range(.40,.75);
-            const auto branch = shape.Trace({head,bend,join},2);
+            const auto branch = shape.Trace({ScaleReach(head,join,protrusion),ScaleReach(bend,join,protrusion),join},2,true);
             shape.Deposit(Along(branch,.32),join,dice);
         }
-        const Point inlet = trunk.front(), outlet = trunk.back();
-        shape.Trace({{std::clamp(inlet.u+dice.Range(-.1,.1),.62,.96),-.02,dice.Range(.010,.015)},
-            {inlet.u,inlet.v,.019}},1);
-        shape.Trace({{outlet.u,outlet.v,.018},
-            {std::clamp(outlet.u+dice.Range(-.10,.10),.68,.98),1.02,dice.Range(.020,.029)}},1);
+        if (protrusion>0) {
+            const Point inlet = trunk.front(), outlet = trunk.back();
+            shape.Trace({ScaleReach({std::clamp(inlet.u+dice.Range(-.1,.1),.62,.96),-.02,dice.Range(.010,.015)},inlet,protrusion),
+                {inlet.u,inlet.v,.019}},1,true);
+            shape.Trace({{outlet.u,outlet.v,.018},
+                ScaleReach({std::clamp(outlet.u+dice.Range(-.10,.10),.68,.98),1.02,dice.Range(.020,.029)},outlet,protrusion)},1,true);
+        }
     } else if (site == SettlementSite::Oasis) {
         const int knots = dice.Count(3,7), branches = dice.Count(1,4);
         const double cu = dice.Range(.63,.76), cv = dice.Range(.34,.68);
@@ -163,14 +182,14 @@ TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extra
         }
         const auto trunk = shape.Trace(controls,2);
         shape.basin = Along(trunk,.5);
-        for (int n = 0; n < branches; ++n) {
+        for (int n = 0; protrusion>0 && n < branches; ++n) {
             const Point join = Along(trunk,dice.Range(.12,.88));
             const double branchAngle = angle + (n%2 ? -1 : 1)*dice.Range(.8,2.2);
             const double length = dice.Range(.07,.17);
             const Point head{std::clamp(join.u+std::cos(branchAngle)*length,.48,.92),
                 std::clamp(join.v+std::sin(branchAngle)*length,.10,.92),breadth*dice.Range(.45,.80)};
             Point bend = Mix(head,join,.5); bend.width = breadth*dice.Range(.65,1.1);
-            const auto branch = shape.Trace({head,bend,join},2);
+            const auto branch = shape.Trace({ScaleReach(head,join,protrusion),ScaleReach(bend,join,protrusion),join},2,true);
             shape.Deposit(Along(branch,.25),join,dice,.7);
         }
     } else {
@@ -182,14 +201,15 @@ TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extra
         for (int n = 0; n < knots; ++n) controls.push_back({axis+dice.Range(-bends,bends),
             -.02+1.04*n/(knots-1),mountain ? dice.Range(.23,.31) : dice.Range(.10,.23)});
         const auto trunk = shape.Trace(controls,0);
-        if (mountain) {
+        if (mountain && protrusion>0) {
             const int branches = dice.Count(1,4);
             for (int n = 0; n < branches; ++n) {
                 const Point join = Along(trunk,.18+.64*(n+dice.Range(.1,.9))/branches);
                 const Point head{n%2 ? dice.Range(.82,.95) : dice.Range(.05,.18),
                     std::clamp(join.v+dice.Range(-.12,.12),.10,.90),dice.Range(.025,.05)};
                 Point bend = Mix(head,join,.50); bend.width = dice.Range(.05,.10);
-                const auto branch = shape.Trace({head,bend,{join.u,join.v,dice.Range(.12,.16)}},0);
+                const auto branch = shape.Trace({ScaleReach(head,join,protrusion),ScaleReach(bend,join,protrusion),
+                    {join.u,join.v,dice.Range(.12,.16)}},0,true);
                 shape.Deposit(Along(branch,.60),join,dice);
             }
         }
@@ -198,23 +218,18 @@ TerrainSkeleton MakeSkeleton(SettlementSite site, std::uint32_t seed, bool extra
         // Independent stream so enabling an optional river never changes the
         // already selected regional geology or a remnant pool's parameters.
         Dice river{seed ^ 0xabe84729U};
-        const int knots = river.Count(3,8), branches = river.Count(0,3);
+        const int knots = river.Count(3,8);
         const double axis = river.Range(.60,.76), bends = river.Range(.03,.12);
-        const double upstream = river.Range(.013,.021), growth = river.Range(1.35,1.9);
+        const double widthScale = site == SettlementSite::River ? 1.0 + 2.0*protrusion : 1.0;
+        const double upstream = river.Range(.013,.021)*widthScale, growth = river.Range(1.35,1.9);
         std::vector<Point> controls;
         for (int n = 0; n < knots; ++n) {
             const double t = static_cast<double>(n)/(knots-1);
             controls.push_back({std::clamp(axis+river.Range(-bends,bends),.50,.88),-.02+1.04*t,upstream*(1+(growth-1)*t)});
         }
         const auto trunk = shape.Trace(controls,1);
-        for (int n = 0; n < branches; ++n) {
-            const Point join = Along(trunk,.22+.60*(n+river.Range(.1,.9))/std::max(1,branches));
-            const Point head{std::min(.99,join.u+river.Range(.12,.25)),std::max(.01,join.v-river.Range(.10,.20)),.009};
-            Point bend = Mix(head,join,.50); bend.u += river.Range(-.025,.025); bend.width = .013;
-            const auto branch = shape.Trace({head,bend,join},1);
-            shape.Deposit(Along(branch,.55),join,river,.65);
-        }
-        // A point bar remains meaningful even for a reach without tributaries.
+        // Keep a single meandering channel. Narrow diagonal tributaries
+        // become chains of single-block steps at settlement scale.
         shape.Deposit(Along(trunk,.35),Along(trunk,.6),river,.6);
     }
     if (extraPond && (site == SettlementSite::Plains || site == SettlementSite::Forest)) {
@@ -283,7 +298,8 @@ std::pair<int, int> SettlementResourceAnchor(const MapPlan& plan, SettlementSite
 
 void PrepareSettlementSite(MapPlan& plan, std::vector<std::uint8_t>& footprint,
     std::vector<std::uint8_t>& structure, SettlementSite site, int rotation,
-    std::uint8_t ground, bool village, bool extraRiver, bool extraPond) {
+    std::uint8_t ground, bool village, bool extraRiver, bool extraPond,
+    const SettlementTerrainOptions& terrain) {
     plan.settlementSite = SettlementSiteName(site);
     plan.siteRotation = rotation;
     plan.localEconomy = SettlementSiteEconomy(site);
@@ -291,13 +307,22 @@ void PrepareSettlementSite(MapPlan& plan, std::vector<std::uint8_t>& footprint,
     plan.terrainHistory.clear();
     const int width = plan.width, height = plan.depth, area = width * height;
     const auto seed = plan.seed;
-    const auto shape = MakeSkeleton(site, seed, extraRiver, extraPond);
+    const auto percent=[](double value,double fallback) {
+        return std::clamp(std::isfinite(value)?value:fallback,0.0,100.0);
+    };
+    const double protrusion=percent(terrain.protrusionPercent,50)/100.0;
+    const double smoothness=percent(terrain.smoothnessPercent,50)/50.0;
+    const auto shape = MakeSkeleton(site, seed, extraRiver, extraPond, protrusion);
     const auto& courses = shape.courses;
     const auto& fans = shape.fans;
 
     std::vector<double> elevation(area), hardness(area), incision(area), deposit(area), moisture(area);
     std::vector<double> us(area), vs(area);
-    std::vector<std::uint8_t> stream(area, 0), water(area, 0), natural(area, ground);
+    const bool smoothBranches=smoothness>0 &&
+        std::any_of(courses.begin(),courses.end(),[](const Course& course){return course.branch;});
+    const bool smoothStreams=smoothBranches && site==SettlementSite::Lake;
+    std::vector<std::uint8_t> stream(area, 0), mainStream(smoothStreams?area:0, 0), water(area, 0), natural(area, ground);
+    std::vector<double> branchInfluence(smoothBranches?area:0, 0), streamField(smoothStreams?area:0, -1);
     for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
         const int i = y * width + x;
         const auto [u,v] = Rotate(static_cast<double>(x) / (width - 1), static_cast<double>(y) / (height - 1), (4 - rotation) % 4);
@@ -314,6 +339,10 @@ void PrepareSettlementSite(MapPlan& plan, std::vector<std::uint8_t>& footprint,
             const double cu = course.a.u+du*t, cv = course.a.v+dv*t;
             const double radius = (course.a.width+(course.b.width-course.a.width)*t) * (1.12-.24*rock);
             const double ratio2 = ((u-cu)*(u-cu)+(v-cv)*(v-cv)) / (radius*radius);
+            if (smoothBranches && course.branch && ratio2 < 12.25) {
+                const double weight=std::clamp((3.5-std::sqrt(ratio2))/2.5,0.0,1.0);
+                branchInfluence[i] = std::max(branchInfluence[i],weight*weight*(3.0-2.0*weight));
+            }
             if (ratio2 > 4.0) continue;
             double bed;
             if (course.kind == 0) {
@@ -326,7 +355,11 @@ void PrepareSettlementSite(MapPlan& plan, std::vector<std::uint8_t>& footprint,
                 // discharge widens the active channel.
                 const double surface = .43-.08*v;
                 bed = surface-.085+.085*ratio2+.005*(rock-.5);
-                if (ratio2 < .90) stream[i] = 1;
+                if (smoothStreams) streamField[i] = std::max(streamField[i],1.0-ratio2/.90);
+                if (ratio2 < .90) {
+                    stream[i] = 1;
+                    if (smoothStreams && !course.branch) mainStream[i] = 1;
+                }
             } else {
                 bed = .16+.24*std::pow(ratio2,.8)+.035*(rock-.5);
             }
@@ -342,6 +375,53 @@ void PrepareSettlementSite(MapPlan& plan, std::vector<std::uint8_t>& footprint,
         }
         // A small active thalweg is retained through river point-bar deposits.
         elevation[i] = after + deposit[i]*(stream[i] ? .15 : 1.0);
+    }
+
+    if (site == SettlementSite::Coast || site == SettlementSite::Lake ||
+        site == SettlementSite::Oasis || site == SettlementSite::MountainValley || extraPond) {
+        // Round local peaks and fill narrow notches before tracing the waterline
+        // or the cliff contour. The main river's stream mask stays independent.
+        std::vector<double> smoothed(area);
+        for (int pass=0;pass<2;++pass) {
+            for (int y=0;y<height;++y) for (int x=0;x<width;++x) {
+                double sum=0;
+                for (int dy=-1;dy<=1;++dy) for (int dx=-1;dx<=1;++dx) {
+                    const int nx=std::clamp(x+dx,0,width-1),ny=std::clamp(y+dy,0,height-1);
+                    sum+=elevation[ny*width+nx]*(dx==0?2:1)*(dy==0?2:1);
+                }
+                smoothed[y*width+x]=sum/16.0;
+            }
+            elevation.swap(smoothed);
+        }
+    }
+
+    if (smoothBranches) {
+        // Round the bank near the branch without flattening the rest of the map.
+        const int radius=std::max(1,static_cast<int>(std::lround(
+            std::clamp(std::min(width,height)/20,6,24)*std::sqrt(smoothness))));
+        const double amount=std::min(1.0,smoothness);
+        const double scale=(radius+1)*(radius+1);
+        auto soften = [&](std::vector<double>& field, double strength) {
+            std::vector<double> horizontal(area);
+            for (int y=0;y<height;++y) for (int x=0;x<width;++x)
+                for (int dx=-radius;dx<=radius;++dx)
+                    horizontal[y*width+x] += field[y*width+std::clamp(x+dx,0,width-1)]*(radius+1-std::abs(dx))/scale;
+            for (int y=0;y<height;++y) for (int x=0;x<width;++x) {
+                const int i=y*width+x;
+                if (branchInfluence[i]==0) continue;
+                double average=0;
+                for (int dy=-radius;dy<=radius;++dy)
+                    average += horizontal[std::clamp(y+dy,0,height-1)*width+x]*(radius+1-std::abs(dy))/scale;
+                field[i] += branchInfluence[i]*strength*(average-field[i]);
+            }
+        };
+        soften(elevation,amount);
+        soften(elevation,.8*amount);
+        if (smoothStreams) {
+            soften(streamField,.70*amount);
+            for (int i=0;i<area;++i) if (branchInfluence[i]>0)
+                stream[i] = mainStream[i] || streamField[i]>-.10*amount*branchInfluence[i];
+        }
     }
 
     const auto adjacent = [&](int i, const auto& visit) {

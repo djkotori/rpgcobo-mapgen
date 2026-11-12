@@ -318,6 +318,30 @@ void TestOuterDefenseStrength() {
     std::cout << "Outer defense: open, dry wall, fortified dry wall and moated tiers differ\n";
 }
 
+void TestNativeDoorCorners() {
+    int generated=0;
+    for(int size:{64,80})for(unsigned seed=1;seed<=12;++seed){
+        MapGenParams p;p.width=p.depth=size;p.seed=seed;
+        p.extra={{"nativeAssetTown",1},{"sharedKeepWalls",1},{"castleHumanScale",2},
+            {"keepScale",2},{"keepWidth",size*.375},{"keepHeight",size*.25},
+            {"keepRoomCountMin",12},{"keepRoomCountMax",12},{"candidateCount",2}};
+        MapPlan plan;std::string error;CastleMapImageGenerator generator(p);
+        if(!generator.Generate(plan,error))continue; // An unconnectable candidate is a clean failure.
+        ++generated;
+        for(const auto&door:plan.regions)if(door.kind=="room_connection"){
+            int parents=0;
+            for(const auto&room:plan.regions)if(room.kind=="room"&&(room.id==door.parentId||room.id==door.linkedRegionId)){
+                ++parents;
+                if(door.rotation%2)Require(door.y0>room.y0&&door.y1<room.y1,"Native door consumed a vertical shared-wall corner");
+                else Require(door.x0>room.x0&&door.x1<room.x1,"Native door consumed a horizontal shared-wall corner");
+            }
+            Require(parents==2,"Native door lost its two adjacent rooms");
+        }
+    }
+    Require(generated>0,"Native doorway matrix did not exercise a valid layout");
+    std::cout<<"Native shared-wall doors retain both room corners across "<<generated<<" layouts\n";
+}
+
 void TestCorruptionDetection() {
     MapGenParams params;
     params.width = params.depth = 192; params.seed = 4242;
@@ -356,7 +380,7 @@ void TestCorruptionDetection() {
 
 int main() {
     try {
-        TestMatrix(); TestConstraintsAndDiversity(); TestWealthDevelopment(); TestOuterDefenseStrength(); TestCorruptionDetection();
+        TestMatrix(); TestConstraintsAndDiversity(); TestWealthDevelopment(); TestOuterDefenseStrength(); TestNativeDoorCorners(); TestCorruptionDetection();
         std::cout << "CASTLE_LAYOUT: PASS\n";
         return 0;
     } catch (const std::exception& error) {

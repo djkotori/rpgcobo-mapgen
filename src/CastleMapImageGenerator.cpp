@@ -363,7 +363,7 @@ void PaintRing(
 
 // Only secondary apartments are subdivided. Major halls/kitchens retain
 // their reserved area even when the requested room count increases.
-std::vector<RoomInfo> PlanKeepRooms(CastleMode mode, const CastleProgram& program, const Rect& bounds, int count, int& entry) {
+std::vector<RoomInfo> PlanKeepRooms(CastleMode mode, const CastleProgram& program, const Rect& bounds, int count, int& entry, bool spacious = false) {
     std::vector<RoomInfo> result;
     bool valid = true;
     auto add = [&](Rect rect, const std::string& role) {
@@ -399,9 +399,13 @@ std::vector<RoomInfo> PlanKeepRooms(CastleMode mode, const CastleProgram& progra
         for (std::size_t i = 0; i < plots.size(); ++i) add(plots[i], roles[(i + (largeFirst ? 1 : 0)) % roles.size()]);
     };
     const int w = bounds.Width(), h = bounds.Height();
+    // At human scale 2, the throne needs a back wall, a 3-block-deep seat,
+    // an audience area and a separate door landing. Do not turn it into a
+    // shallow strip just to give the entrance hall more floor area.
+    if (spacious && h < (mode == CastleMode::Hill ? 22 : 18)) return {};
     entry = 1;
     if (mode == CastleMode::Hill) {
-        const int top = bounds.y0 + std::max(4, h / 4);
+        const int top = bounds.y0 + std::max(spacious ? 9 : 4, h / 4);
         const int bottom = bounds.y1 - std::max(4, h / 3);
         add({bounds.x0, bounds.y0, bounds.x1, top}, "throne_room");
         add({bounds.x0, bottom, bounds.x1, bounds.y1}, "entrance_hall");
@@ -409,15 +413,18 @@ std::vector<RoomInfo> PlanKeepRooms(CastleMode mode, const CastleProgram& progra
     } else if (mode == CastleMode::River) {
         const int elbow = bounds.x0 + std::clamp(w * 36 / 100, 4, w - 4);
         const int crossbar = bounds.y0 + std::max(4, h * 42 / 100);
-        const int officeEnd = bounds.y0 + std::clamp(h / 3, 4, h - 4);
+        const int officeEnd = bounds.y0 + std::clamp(h / 3, spacious ? 9 : 4, h - (spacious ? 9 : 4));
         add({bounds.x0, bounds.y0, elbow, officeEnd}, "throne_room");
         add({bounds.x0, officeEnd, elbow, bounds.y1}, "entrance_hall");
         bank({elbow, bounds.y0, bounds.x1, crossbar}, count - 2, program.chambers, false);
     } else {
         const int wing = std::clamp(w * (mode == CastleMode::Palace ? 26 : 28) / 100, 4, (w - 4) / 2);
         const int left = bounds.x0 + wing, right = bounds.x1 - wing;
-        const int front = mode == CastleMode::Palace ? bounds.y0 + std::max(8, h * 62 / 100) : bounds.y1;
-        const int principalEnd = bounds.y0 + std::clamp((front - bounds.y0) / 4, 4, front - bounds.y0 - 4);
+        const int front = mode == CastleMode::Palace ? bounds.y0 +
+            (spacious ? std::clamp(h * 72 / 100, 18, h) : std::max(8, h * 62 / 100)) : bounds.y1;
+        const int principalEnd = bounds.y0 + (spacious ?
+            std::clamp((front - bounds.y0) * 38 / 100, 9, front - bounds.y0 - 9) :
+            std::clamp((front - bounds.y0) / 4, 4, front - bounds.y0 - 4));
         add({left, bounds.y0, right, principalEnd}, "throne_room");
         add({left, principalEnd, right, front}, "entrance_hall");
         const int leftCount = (count - 1) / 2, rightCount = count - 2 - leftCount;
@@ -808,10 +815,12 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         if (!mainRoadWidthWasExplicit) mainRoadWidth = std::min(mainRoadWidth, 3);
     }
 
+    const char* failureStage = "outer fortifications";
+    const int candidateOffset=std::clamp(static_cast<int>(GetParam("castleCandidateOffset",0)),0,1000000);
     for (int candidateIndex = 0;
         candidateIndex < candidateCount || (!candidateCountWasExplicit && !generated && candidateIndex < 12);
         ++candidateIndex) {
-        std::mt19937 rng(CandidateSeed(params_.seed, candidateIndex));
+        std::mt19937 rng(CandidateSeed(params_.seed, candidateOffset+candidateIndex));
         const int moatWidth = hasMoat ? std::uniform_int_distribution<int>(moatMin, moatMax)(rng) : 0;
         const int outerWallThickness = hasOuterWall ? wallThickness : 0;
         const int wallInset = hasMoat ? moatWidth : (hasOuterWall ? std::max(2, wallThickness) : 0);
@@ -841,7 +850,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         // Straight wall faces meet gently irregular cut-back corners. The
         // ridge constrains the upper ward; a river constrains one flank;
         // formal palaces retain broad, almost rectangular courts.
-        const int contourScale = minDimension < 96 ? 0 : std::min(wallRect.Width(), wallRect.Height());
+        const int contourScale = minDimension < 96 && GetParam("castleHumanScale",1)<2 ? 0 : std::min(wallRect.Width(), wallRect.Height());
         const int baseCut = static_cast<int>(contourScale * std::uniform_real_distribution<double>(0.08, 0.16)(rng));
         std::array<int, 4> cuts{baseCut, baseCut, baseCut, baseCut}; // NW, NE, SW, SE
         if (mode == CastleMode::Hill) cuts = {contourScale / 3, contourScale / 3, baseCut / 2, baseCut / 2};
@@ -1112,10 +1121,17 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         }
 
         const double compactRatio = minDimension < 112 ? 0.42 : program.keepWidth;
-        const int keepWidth = std::clamp(static_cast<int>(std::lround(GetParam("keepWidth", innerRect.Width() * compactRatio))),
+        const int baseKeepWidth = std::clamp(static_cast<int>(std::lround(GetParam("keepWidth", innerRect.Width() * compactRatio))),
             16, std::max(16, innerRect.Width() - 22));
-        const int keepHeight = std::clamp(static_cast<int>(std::lround(GetParam("keepHeight", innerRect.Height() *
+        const int baseKeepHeight = std::clamp(static_cast<int>(std::lround(GetParam("keepHeight", innerRect.Height() *
             (minDimension < 112 ? 0.40 : program.keepDepth)))), 16, std::max(16, innerRect.Height() - 22));
+        // Enlarge the rooms, not the masonry. Leave an outdoor access strip
+        // inside the curtain even when the requested keep exceeds the canvas.
+        const double keepScale = std::clamp(GetParam("keepScale", 1), 1.0, 2.0);
+        const int keepWidth = std::min(static_cast<int>(std::lround(baseKeepWidth * keepScale)),
+            std::max(16, innerRect.Width() - 10));
+        const int keepHeight = std::min(static_cast<int>(std::lround(baseKeepHeight * keepScale)),
+            std::max(16, innerRect.Height() - 10));
         const int keepCenterX = centerX + (mode == CastleMode::River ? std::max(4, innerRect.Width() / 32) : 0);
         const int keepY = innerRect.y0 + std::max(10, innerRect.Height() / (mode == CastleMode::Hill ? 6 : 8)) + keepHeight / 2;
         const Rect keep{
@@ -1127,6 +1143,36 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         Rect keepFixed = keep;
         keepFixed.x1 = keepFixed.x0 + keepWidth;
         keepFixed.y1 = keepFixed.y0 + keepHeight;
+        if (GetParam("nativeAssetTown", 0) > 0) {
+            // Fit the enlarged bounding box before towers are placed. The
+            // old fixed position could cover a side gatehouse or seal the
+            // bailey's only passage. Reserve land south of the main house.
+            std::vector<int> blocked((width+1)*(height+1), 0);
+            for (int y=0; y<height; ++y) for (int x=0; x<width; ++x) {
+                const int at=(y+1)*(width+1)+x+1;
+                blocked[at]=(!domain[Index(x,y,width)]||structure[Index(x,y,width)])+
+                    blocked[at-1]+blocked[at-width-1]-blocked[at-width-2];
+            }
+            auto clearKeep = [&](const Rect& r) {
+                const int stride=width+1;
+                const int x0=r.x0-1,y0=r.y0-1,x1=r.x1+1,y1=r.y1+1;
+                return blocked[y1*stride+x1]-blocked[y0*stride+x1]-blocked[y1*stride+x0]+blocked[y0*stride+x0]==0;
+            };
+            bool fitted=false;
+            for (int percent=100; percent>=50 && !fitted; percent-=5) {
+                const int kw=std::max(16,keepWidth*percent/100),kh=std::max(16,keepHeight*percent/100);
+                int bestCost=std::numeric_limits<int>::max();
+                for (int y=innerRect.y0+2; y+kh<=innerRect.y1-16; ++y)
+                    for (int x=innerRect.x0+2; x+kw<=innerRect.x1-2; ++x) {
+                        const Rect option{x,y,x+kw,y+kh};
+                        const int cost=std::abs(option.CenterX()-keepCenterX)*2+y-innerRect.y0;
+                        if(cost>=bestCost||!clearKeep(option))continue;
+                        keepFixed=option;bestCost=cost;fitted=true;
+                    }
+            }
+            failureStage="fitting the enlarged keep without blocking castle gates";
+            if(!fitted)continue;
+        }
         int wardGap = std::clamp(castleDimension / 20, 4, 20);
         Rect innerWard = keepFixed;
         bool hasInnerWard = false;
@@ -1237,6 +1283,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             candidate.markers.back().role = "tower_stairs";
             towerApproaches.push_back(approach);
         }
+        failureStage = "fitting the requested towers beside the keep";
         if (static_cast<int>(towerApproaches.size()) < towerMin) continue;
 
         std::vector<std::pair<int, std::string>> keepAnnexFurnishings;
@@ -1244,20 +1291,33 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         std::vector<std::vector<RoomInfo>> layouts;
         for (int count = roomMin; count <= roomMax; ++count) {
             int ignoredEntry = 0;
-            auto layout = PlanKeepRooms(mode, program, keepInner, count, ignoredEntry);
+            auto layout = PlanKeepRooms(mode, program, keepInner, count, ignoredEntry, GetParam("nativeAssetTown",0)>0);
             if (!layout.empty()) layouts.push_back(std::move(layout));
         }
+        failureStage = "fitting the requested keep rooms";
         if (layouts.empty()) continue;
         std::vector<RoomInfo> rooms = layouts[std::uniform_int_distribution<int>(0, static_cast<int>(layouts.size()) - 1)(rng)];
+        if(GetParam("nativeAssetTown",0)>0){
+            // Even a four-room keep needs food preparation and somewhere to sleep.
+            rooms[2].role="great_kitchen";
+            rooms[3].role=mode==CastleMode::Fortress||mode==CastleMode::Hill?"garrison_quarters":"royal_chambers";
+        }
         const int entryRoomIndex = 1;
         candidate.regions.push_back({"keep", 0, keepFixed.x0, keepFixed.y0, keepFixed.x1 - 1, keepFixed.y1 - 1});
         candidate.regions.back().role = "keep";
         candidate.regions.push_back({"keep_layout", 0, keepFixed.x0, keepFixed.y0, keepFixed.x1 - 1, keepFixed.y1 - 1});
         candidate.regions.back().role = program.layout;
-        // Build masonry around the union of rooms. Recesses/courts are real
-        // open space, so U/L/cross/T plans do not become rectangular boxes.
+        const bool sharedKeepWalls = GetParam("sharedKeepWalls", 0) > 0;
+        std::vector<int> roomOwner(sharedKeepWalls ? area : 0, -1);
+        if (sharedKeepWalls) for (const auto& room : rooms)
+            for (int y = room.rect.y0; y < room.rect.y1; ++y)
+                for (int x = room.rect.x0; x < room.rect.x1; ++x) roomOwner[Index(x,y,width)] = room.regionId;
+        // Preserve the outline and open courts. Adjacent rooms share a single
+        // partition on the lower/right room's edge, instead of two wall rings.
         for (const auto& room : rooms) {
-            const Rect shell{room.rect.x0 - 2, room.rect.y0 - 2, room.rect.x1 + 2, room.rect.y1 + 2};
+            const int shellWidth = sharedKeepWalls ? 1 : 2;
+            const Rect shell{room.rect.x0 - shellWidth, room.rect.y0 - shellWidth,
+                room.rect.x1 + shellWidth, room.rect.y1 + shellWidth};
             PaintRect(biomes, width, height, shell, EXMOUNTAIN);
             for (int y = shell.y0; y < shell.y1; ++y) for (int x = shell.x0; x < shell.x1; ++x) structure[Index(x, y, width)] = 1;
         }
@@ -1265,11 +1325,18 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             const bool wood = room.role.find("chamber") != std::string::npos || room.role.find("quarters") != std::string::npos ||
                 room.role == "guard_hall" || room.role == "guest_apartment";
             PaintRect(biomes, width, height, room.rect, static_cast<std::uint8_t>(wood ? TOWN_WOOD_FLOOR : TOWN_STONE_FLOOR));
-            PaintRing(biomes, structure, width, height, room.rect, 1, MOUNTAIN);
+            if (!sharedKeepWalls) PaintRing(biomes, structure, width, height, room.rect, 1, MOUNTAIN);
             candidate.regions.push_back({"room", room.regionId, room.rect.x0, room.rect.y0, room.rect.x1 - 1, room.rect.y1 - 1});
             candidate.regions.back().role = room.role;
             candidate.markers.push_back({"landmark", room.rect.CenterX(), room.rect.CenterY(), room.regionId});
             candidate.markers.back().role = room.role;
+        }
+        if (sharedKeepWalls) for (const auto& room : rooms) {
+            for (int y = room.rect.y0; y < room.rect.y1; ++y) for (int x = room.rect.x0; x < room.rect.x1; ++x) {
+                if ((x == room.rect.x0 && roomOwner[Index(x-1,y,width)] >= 0) ||
+                    (y == room.rect.y0 && roomOwner[Index(x,y-1,width)] >= 0))
+                    biomes[Index(x,y,width)] = MOUNTAIN;
+            }
         }
         auto openRoomCell = [&](Point point) {
             if (!InBounds(point.x, point.y, width, height)) return;
@@ -1301,19 +1368,55 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             bool found = false;
             for (const auto& edge : roomEdges) {
                 if (roomConnected[edge.a] == roomConnected[edge.b]) continue;
+                if(sharedKeepWalls && GetParam("nativeAssetTown",0)>0){
+                    const auto&a=rooms[edge.a].rect;const auto&b=rooms[edge.b].rect;
+                    const bool vertical=a.x1==b.x0||b.x1==a.x0;
+                    const int lo=vertical?std::max(a.y0,b.y0)+1:std::max(a.x0,b.x0)+1;
+                    const int hi=vertical?std::min(a.y1,b.y1)-3:std::min(a.x1,b.x1)-3;
+                    // A native doorway needs two source cells plus corner margins.
+                    // Reject this adjacency before changing either room's cells.
+                    if(lo>hi)continue;
+                }
                 if (roomConnected[edge.a]) { openRoomCell(edge.doorA); openRoomDoor(edge.doorB, edge.b); }
                 else { openRoomDoor(edge.doorA, edge.a); openRoomCell(edge.doorB); }
+                if(sharedKeepWalls && GetParam("nativeAssetTown",0)>0){
+                    const auto&a=rooms[edge.a].rect;const auto&b=rooms[edge.b].rect;
+                    const bool vertical=a.x1==b.x0||b.x1==a.x0;
+                    const int tangent=vertical?std::clamp(edge.doorA.y,std::max(a.y0,b.y0)+1,std::min(a.y1,b.y1)-3):
+                        std::clamp(edge.doorA.x,std::max(a.x0,b.x0)+1,std::min(a.x1,b.x1)-3);
+                    const int plane=vertical?std::max(a.x0,b.x0):std::max(a.y0,b.y0);
+                    for(int k=0;k<2;++k){
+                        openRoomCell(vertical?Point{plane,tangent+k}:Point{tangent+k,plane});
+                        openRoomCell(vertical?Point{plane-1,tangent+k}:Point{tangent+k,plane-1});
+                    }
+                    MapPlanRegion door{"room_connection",roomConnections,vertical?plane:tangent,vertical?tangent:plane,
+                        vertical?plane:tangent+1,vertical?tangent+1:plane};
+                    door.role="shared_wall_door";door.rotation=vertical?1:0;
+                    door.parentId=edge.a;door.linkedRegionId=edge.b;
+                    for(int i=0;i<static_cast<int>(candidate.regions.size());++i)
+                        if(candidate.regions[i].kind=="room"&&candidate.regions[i].id==edge.a)door.parentIndex=i;
+                    candidate.regions.push_back(door);
+                }
                 roomConnected[edge.a] = roomConnected[edge.b] = true;
                 ++roomConnections; found = true; break;
             }
             if (!found) break;
         }
+        failureStage = "connecting keep rooms";
         if (roomConnections != static_cast<int>(rooms.size())) continue;
         const RoomInfo& entryRoom = rooms[entryRoomIndex];
         const Point keepDoor{entryRoom.rect.CenterX(), entryRoom.rect.y1 + 1};
         openRoomDoor({entryRoom.rect.CenterX(), entryRoom.rect.y1 - 1}, entryRoom.regionId);
         openRoomCell({keepDoor.x, keepDoor.y - 1});
         openRoomCell(keepDoor);
+        if (sharedKeepWalls && GetParam("nativeAssetTown", 0) > 0) {
+            // The editor's existing great gate is 10 blocks wide and 7 high.
+            // This source is subsequently expanded 2x, so reserve five cells.
+            for (int y = entryRoom.rect.y1 - 1; y <= keepDoor.y; ++y)
+                for (int x = keepDoor.x - 2; x <= keepDoor.x + 2; ++x) openRoomCell({x,y});
+            candidate.regions.push_back({"castle_front_door",0,keepDoor.x-2,entryRoom.rect.y1,keepDoor.x+2,entryRoom.rect.y1});
+            candidate.regions.back().role = "great_castle_gate";
+        }
         candidate.markers.push_back({"service_entry", keepDoor.x, keepDoor.y, 0});
         candidate.markers.back().role = "keep_public_entry";
         // A palace's entrance opens into the court between its long wings;
@@ -1431,6 +1534,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             candidate.regions.back().role = kind;
             return true;
         };
+        failureStage = "connecting the main gate to the keep";
         if (!paintModeAxis(gates.front().inner, keepDoor, gates.front().halfWidth,
             mode == CastleMode::Palace ? "ceremonial_avenue" : "defense_axis", 0)) continue;
 
@@ -1621,7 +1725,10 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             candidate.markers.back().role = candidate.regions.back().role + "_entry";
             reservedAccess[static_cast<std::size_t>(Index(approach.x, approach.y, width))] = 1;
         }
-        if (nextFacilityId < std::min(requiredFacilities, remainingFacilityTarget)) continue;
+        // Native houses replace these temporary bailey facilities. A larger
+        // keep may leave fewer seed plots, which must not reject the castle.
+        if (nextFacilityId < std::min(requiredFacilities, remainingFacilityTarget) &&
+            GetParam("nativeAssetTown", 0) <= 0) continue;
 
         std::vector<RouteNode> nodes;
         nodes.push_back({gates.front().inner, true});
@@ -1632,6 +1739,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         for (const FacilityInfo& facility : facilities) nodes.push_back({facility.approach, false});
         std::vector<Point> waterCrossings;
         std::vector<std::uint8_t> connected(nodes.size(), 0);
+        std::vector<std::uint8_t> blockedEdges(nodes.size()*nodes.size(), 0);
         connected[0] = 1;
         int connectedCount = 1;
         auto connectNodes = [&](int a, int b, int halfWidth) {
@@ -1648,6 +1756,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
                 if (connected[static_cast<std::size_t>(a)] == 0) continue;
                 for (int b = 0; b < static_cast<int>(nodes.size()); ++b) {
                     if (connected[static_cast<std::size_t>(b)] != 0) continue;
+                    if (blockedEdges[static_cast<std::size_t>(a)*nodes.size()+b]) continue;
                     const int distance = Manhattan(nodes[static_cast<std::size_t>(a)].point, nodes[static_cast<std::size_t>(b)].point);
                     if (distance < bestDistance) {
                         bestDistance = distance;
@@ -1658,11 +1767,15 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
             }
             if (bestB < 0) break;
             if (!connectNodes(bestA, bestB, bestA == 0 || bestB == 0 ? std::max(0, (mainRoadWidth - 1) / 2) : 0)) {
-                break;
+                // The enlarged keep can separate the nearest pair. Try a
+                // route from another connected node before rejecting it.
+                blockedEdges[static_cast<std::size_t>(bestA)*nodes.size()+bestB] = 1;
+                continue;
             }
             connected[static_cast<std::size_t>(bestB)] = 1;
             ++connectedCount;
         }
+        failureStage = "connecting castle facilities and towers";
         if (connectedCount < static_cast<int>(nodes.size())) continue;
         std::vector<std::pair<int, int>> extraEdges;
         for (int a = 0; a < static_cast<int>(nodes.size()); ++a) for (int b = a + 1; b < static_cast<int>(nodes.size()); ++b) extraEdges.push_back({a, b});
@@ -1777,6 +1890,9 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         // Reuse the town's connected construction projects: approaches and
         // working frontages receive paving before unused ground. Supply it
         // with a semantic view of castle buildings; leave exported roles intact.
+        candidate.settlementMask=domain;
+        candidate.castleStreetMask.assign(area,0);
+        for(int i=0;i<area;++i)if(biomes[i]==ROAD||biomes[i]==BRIDGE)candidate.castleStreetMask[i]=1;
         MapPlan pavingPlan = candidate;
         const double basePavingRatio = mode == CastleMode::Palace ? 0.88 : 0.68;
         const double wealthPavingRatio = std::clamp(basePavingRatio + (wealth - 1.0) * 0.18, 0.35, 0.96);
@@ -1845,13 +1961,13 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
         const int architectureRegionCount = static_cast<int>(candidate.regions.size());
         for (int regionIndex = 0; regionIndex < architectureRegionCount; ++regionIndex) {
             const auto region = candidate.regions[regionIndex];
-            if (region.kind == "room") FurnishCastleRoom(candidate, regionIndex, RoomFurnishing(region.role), wealth);
+            if (GetParam("nativeAssetTown",0)<=0 && region.kind == "room") FurnishCastleRoom(candidate, regionIndex, RoomFurnishing(region.role), wealth);
         }
         for (const auto& [regionIndex, furnishing] : keepAnnexFurnishings) {
-            FurnishCastleRoom(candidate, regionIndex, furnishing, wealth);
+            if(GetParam("nativeAssetTown",0)<=0)FurnishCastleRoom(candidate, regionIndex, furnishing, wealth);
         }
         for (const FacilityInfo& facility : facilities) {
-            FurnishCastleRoom(candidate, facility.regionIndex, facility.furnishing, wealth);
+            if(GetParam("nativeAssetTown",0)<=0)FurnishCastleRoom(candidate, facility.regionIndex, facility.furnishing, wealth);
         }
         const int equipmentCount = static_cast<int>(std::count_if(candidate.regions.begin(), candidate.regions.end(), [](const auto& region) {
             return region.kind == "furniture";
@@ -1906,7 +2022,7 @@ bool CastleMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) 
     }
 
     if (!generated) {
-        outError = "Castle generation could not place a connected fortified layout with the requested constraints";
+        outError = std::string("Castle generation could not place a connected fortified layout: ") + failureStage;
         return false;
     }
     outPlan = std::move(best.plan);

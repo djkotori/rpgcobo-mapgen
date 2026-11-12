@@ -886,45 +886,5 @@ bool CaveMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         }
     }
 
-    // Explicitly materialize level transitions.  Previously LADDER existed in
-    // the palette but was never emitted, leaving multi-level caves without a
-    // usable transition marker.
-    const int requestedLadders = std::clamp(static_cast<int>(std::lround(GetParam("ladderCount", 1.0))), 0, 8);
-    std::vector<int> ladderCandidates;
-    ladderCandidates.reserve(static_cast<std::size_t>(n / 8));
-    for (int y = 1; y < h - 1; ++y) {
-        for (int x = 1; x < w - 1; ++x) {
-            const int cell = Index(x, y, w);
-            if (outBiomes[static_cast<std::size_t>(cell)] != FLOOR_LV1 &&
-                outBiomes[static_cast<std::size_t>(cell)] != FLOOR_LV2) {
-                continue;
-            }
-            bool touchesOtherLevel = false;
-            for (const auto& direction : std::array<std::array<int, 2>, 4>{{{{1, 0}}, {{-1, 0}}, {{0, 1}}, {{0, -1}}}}) {
-                const int nx = x + direction[0];
-                const int ny = y + direction[1];
-                if (InBounds(nx, ny, w, h)) {
-                    const std::uint8_t neighbor = outBiomes[static_cast<std::size_t>(Index(nx, ny, w))];
-                    if ((outBiomes[static_cast<std::size_t>(cell)] == FLOOR_LV1 && neighbor == FLOOR_LV2) ||
-                        (outBiomes[static_cast<std::size_t>(cell)] == FLOOR_LV2 && neighbor == FLOOR_LV1)) {
-                        touchesOtherLevel = true;
-                        break;
-                    }
-                }
-            }
-            if (touchesOtherLevel) {
-                ladderCandidates.push_back(cell);
-            }
-        }
-    }
-    std::mt19937 ladderRng(params_.seed ^ 0x6d61706cU);
-    std::shuffle(ladderCandidates.begin(), ladderCandidates.end(), ladderRng);
-    const int ladderCount = std::min(requestedLadders, static_cast<int>(ladderCandidates.size()));
-    for (int i = 0; i < ladderCount; ++i) {
-        const int cell = ladderCandidates[static_cast<std::size_t>(i)];
-        outBiomes[static_cast<std::size_t>(cell)] = LADDER;
-        outPlan.markers.push_back({"ladder", cell % w, cell / w, i});
-    }
-
     return true;
 }

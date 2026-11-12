@@ -4,3 +4,9 @@ out
 CMakeFiles
 
 *.obj
+
+# CMake test executables copied to the repository root
+/*_tests.exe
+
+# Local mapgen workflow skill
+/.agents/
