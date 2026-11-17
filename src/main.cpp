@@ -225,12 +225,12 @@ const char* BiomeLabel(const std::string& type, int biome) {
         static const std::array<const char*, 10> labels = {"FLOOR1", "FLOOR2", "UPPERFLOOR", "WALL", "INNERWALL", "CORRIDOR", "DOOR", "RIVER", "LAKE", "BACKGROUND"};
         return biome >= 0 && biome < static_cast<int>(labels.size()) ? labels[static_cast<std::size_t>(biome)] : "UNKNOWN";
     }
-    static const std::array<const char*, 19> labels = {"PLAIN", "DESERT", "FOREST", "MOUNTAIN", "EXMOUNTAIN", "ROAD", "BRIDGE", "RIVER", "LAKE", "SEA", "TOWN_FLOOR", "TOWN_WOOD_FLOOR", "TOWN_STONE_FLOOR", "TOWN_FURNITURE", "TOWN_PAVEMENT", "TOWN_SEA", "TOWN_CLIFF", "TOWN_TREES", "CASTLE_WALL_WALK"};
+    static const std::array<const char*, 21> labels = {"PLAIN", "DESERT", "FOREST", "MOUNTAIN", "EXMOUNTAIN", "ROAD", "BRIDGE", "RIVER", "LAKE", "SEA", "TOWN_FLOOR", "TOWN_WOOD_FLOOR", "TOWN_STONE_FLOOR", "TOWN_FURNITURE", "TOWN_PAVEMENT", "TOWN_SEA", "TOWN_CLIFF", "TOWN_TREES", "CASTLE_WALL_WALK", "COAST", "SNOWFIELD"};
     return biome >= 0 && biome < static_cast<int>(labels.size()) ? labels[static_cast<std::size_t>(biome)] : "UNKNOWN";
 }
 
 bool WriteReportFile(const std::filesystem::path& path, const MapPlan& plan, const MapQualityMetrics& quality, std::string& outError) {
-    std::array<int, 19> count{};
+    std::array<int, 21> count{};
     for (std::uint8_t b : plan.biomes) {
         if (b < count.size()) ++count[static_cast<std::size_t>(b)];
     }

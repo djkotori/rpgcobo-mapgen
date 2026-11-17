@@ -34,6 +34,8 @@ enum MapGenBiomeID {
     TOWN_CLIFF = 16,
     TOWN_TREES = 17,
     CASTLE_WALL_WALK = 18,
+    COAST = 19,
+    SNOWFIELD = 20,
 };
 
 struct MapGenParams {

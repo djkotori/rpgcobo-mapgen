@@ -17,6 +17,7 @@ bool IsWalkable(const std::string& type, std::uint8_t biome) {
         return biome == FLOOR_LV1 || biome == FLOOR_LV2 || biome == LADDER;
     }
     return biome == PLAIN || biome == DESERT || biome == FOREST || biome == ROAD || biome == BRIDGE ||
+        (type == "world" && (biome == COAST || biome == SNOWFIELD)) ||
         (type == "town" || type == "village" || type == "castle") &&
             (biome == TOWN_FLOOR || biome == TOWN_WOOD_FLOOR || biome == TOWN_STONE_FLOOR || biome == TOWN_FURNITURE ||
                 biome == TOWN_PAVEMENT || (type == "castle" && biome == CASTLE_WALL_WALK));
@@ -27,6 +28,7 @@ bool IsFloor(const std::string& type, std::uint8_t biome) {
         return biome == FLOOR_LV1 || biome == FLOOR_LV2;
     }
     return biome == PLAIN || biome == DESERT || biome == FOREST ||
+        (type == "world" && (biome == COAST || biome == SNOWFIELD)) ||
         (type == "town" || type == "village" || type == "castle") &&
             (biome == TOWN_FLOOR || biome == TOWN_WOOD_FLOOR || biome == TOWN_STONE_FLOOR || biome == TOWN_PAVEMENT ||
                 (type == "castle" && biome == CASTLE_WALL_WALK));

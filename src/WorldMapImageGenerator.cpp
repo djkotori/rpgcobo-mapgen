@@ -1,6 +1,7 @@
 #include "WorldMapImageGenerator.h"
 
 #include "utils.h"
+#include "WorldBiomes.h"
 
 #include <algorithm>
 #include <array>
@@ -333,6 +334,10 @@ MapGenColor WorldMapImageGenerator::BiomeToColor(std::uint8_t biome) const {
             return {70, 145, 240};
         case SEA:
             return {28, 90, 202};
+        case COAST:
+            return {238, 220, 158};
+        case SNOWFIELD:
+            return {225, 238, 244};
         default:
             return {255, 0, 255};
     }
@@ -347,6 +352,14 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
     }
 
     const int n = w * h;
+    const double coastRateParam = GetParam("coastRate", 0.3);
+    const double snowfieldRateParam = GetParam("snowfieldRate", 0.5);
+    const double mountainSnowfieldRateParam = GetParam("mountainSnowfieldRate", 1.0);
+    if (!std::isfinite(coastRateParam) || !std::isfinite(snowfieldRateParam) ||
+        !std::isfinite(mountainSnowfieldRateParam)) {
+        outError = "coastRate, snowfieldRate and mountainSnowfieldRate must be finite numbers";
+        return false;
+    }
     outPlan.Reset(w, h, params_.seed, "world");
     std::vector<std::uint8_t>& outBiomes = outPlan.biomes;
     outBiomes.assign(static_cast<std::size_t>(n), static_cast<std::uint8_t>(PLAIN));
@@ -3284,5 +3297,9 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         }
     }
 
+    ApplyWorldBiomes(outPlan, height, params_.seed,
+        static_cast<float>(std::clamp(coastRateParam, 0.0, 1.0)),
+        static_cast<float>(std::clamp(snowfieldRateParam, 0.0, 1.0)),
+        static_cast<float>(std::clamp(mountainSnowfieldRateParam, 0.0, 1.0)));
     return true;
 }
