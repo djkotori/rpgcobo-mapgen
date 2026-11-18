@@ -779,10 +779,24 @@ bool ActiveCellsConnected(const std::vector<bool>& active, int columns, int rows
 
 void ForestMapFilters::Naturalize(MapPlan& plan, std::mt19937& random) {
     const auto original = plan.biomes;
-    for (int y = 1; y + 1 < plan.depth; ++y) {
-        for (int x = 1; x + 1 < plan.width; ++x) {
+    for (int y = 0; y < plan.depth; ++y) {
+        for (int x = 0; x < plan.width; ++x) {
             const auto index = static_cast<std::size_t>(y * plan.width + x);
             const auto center = original[index];
+            if (center == INNERROAD) {
+                for (std::size_t direction = 0; direction < kDirections.size(); ++direction) {
+                    const int nx = x + kDeltaX[direction];
+                    const int ny = y + kDeltaY[direction];
+                    if (nx < 0 || ny < 0 || nx >= plan.width || ny >= plan.depth) continue;
+                    const auto neighbor = original[static_cast<std::size_t>(ny * plan.width + nx)];
+                    if (neighbor == FOREST || neighbor == CLIFF) {
+                        plan.biomes[index] = ROAD;
+                        break;
+                    }
+                }
+                continue;
+            }
+            if (x == 0 || y == 0 || x + 1 == plan.width || y + 1 == plan.depth) continue;
             if (center != PLAIN && center != OPEN && center != LAKE &&
                 center != FOREST && center != CLIFF) continue;
             const auto at = [&](int dx, int dy) {

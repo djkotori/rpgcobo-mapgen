@@ -74,6 +74,16 @@ bool NaturalizedPixelMatches(const MapPlan& original, int x, int y, std::uint8_t
     };
     actual = WithoutDeepForest(actual);
     const auto center = at(0, 0);
+    if (center == INNERROAD) {
+        for (std::size_t direction = 0; direction < Directions.size(); ++direction) {
+            const int nx = x + DeltaX[direction];
+            const int ny = y + DeltaY[direction];
+            if (nx < 0 || ny < 0 || nx >= original.width || ny >= original.depth) continue;
+            const auto neighbor = original.biomes[static_cast<std::size_t>(ny * original.width + nx)];
+            if (neighbor == FOREST || neighbor == CLIFF) return actual == ROAD;
+        }
+        return actual == INNERROAD;
+    }
     if (x == 0 || y == 0 || x + 1 == original.width || y + 1 == original.depth) return actual == center;
     int cliffs = 0;
     bool forest = false;
@@ -227,7 +237,16 @@ void CheckCellRaster(const MapPlan& plan, const Cell& cell, const MapPlanRegion&
                 inner = inner || (x >= std::min(centerX, endX) && x <= std::max(centerX, endX) &&
                     y >= std::min(centerY, endY) && y <= std::max(centerY, endY));
             }
-            Require((biome == INNERROAD) == inner, "INNERROAD does not follow the one-pixel cell centerline");
+            bool touchesTerrain = false;
+            for (std::size_t direction = 0; direction < Directions.size(); ++direction) {
+                const int nx = x + DeltaX[direction];
+                const int ny = y + DeltaY[direction];
+                if (nx < 0 || ny < 0 || nx >= plan.width || ny >= plan.depth) continue;
+                const auto neighbor = WithoutDeepForest(plan.biomes[static_cast<std::size_t>(ny * plan.width + nx)]);
+                touchesTerrain = touchesTerrain || neighbor == FOREST || neighbor == CLIFF;
+            }
+            Require((biome == INNERROAD) == (inner && !touchesTerrain),
+                "INNERROAD does not follow the filtered one-pixel cell centerline");
         }
     }
 }
@@ -341,7 +360,7 @@ void CheckCellMaze(const MapPlan& plan, int expectedColumns, int expectedRows, i
                 metadata.objectVariant == East ? centerX + sampleOffset : centerX;
             const int sampleY = metadata.objectVariant == North ? centerY - sampleOffset :
                 metadata.objectVariant == South ? centerY + sampleOffset : centerY;
-            Require(plan.biomes[static_cast<std::size_t>(sampleY * plan.width + sampleX)] == INNERROAD,
+            Require(Road(plan.biomes[static_cast<std::size_t>(sampleY * plan.width + sampleX)]),
                 "dead-end spur geometry is missing inside its cell");
             const int edgeX = metadata.objectVariant == West ? cell.x0 :
                 metadata.objectVariant == East ? cell.x1 : centerX;
@@ -645,7 +664,8 @@ void CheckVariantConnectivity(const MapPlan& plan, const MapPlan& base, int colu
                         (y == std::max(cell.y0 + 1, centerY - 2) || y == std::min(cell.y1 - 1, centerY + 2));
                     Require(base.biomes[index] != INNERROAD || biome == INNERROAD,
                         "cliff junction space overwrote an INNERROAD centerline");
-                    Require(biome == INNERROAD || biome == PLAIN || (corner && biome == FOREST),
+                    Require(biome == INNERROAD || (biome == ROAD && Road(base.biomes[index])) ||
+                        biome == PLAIN || (corner && biome == FOREST),
                         "selected cliff junction is missing its widened space");
                 }
             }
@@ -965,6 +985,7 @@ void TestCliffNorthwardImagePass() {
                         unroundedCliffs.biomes[index] == baseline &&
                         NaturalizedPixelMatches(unroundedCliffs, x, y, plan.biomes[index]);
                     Require(plan.biomes[index] == withoutCliffs.biomes[index] || roundedRoom ||
+                        (Road(plan.biomes[index]) && Road(withoutCliffs.biomes[index])) ||
                         (cliffSpace && withoutCliffs.biomes[index] == ROAD && plan.biomes[index] == PLAIN),
                         "northward cliff fill overwrote a path, clearing, bridge, or water");
                     ++protectedPixels;
@@ -1254,8 +1275,9 @@ void TestMeanderingCopies() {
                 copied.biomes = std::move(expected);
                 for (int y = 0; y < plan.depth; ++y) {
                     for (int x = 0; x < plan.width; ++x) {
-                        Require(NaturalizedPixelMatches(copied, x, y,
-                            actual[static_cast<std::size_t>(y * plan.width + x)]),
+                        const auto index = static_cast<std::size_t>(y * plan.width + x);
+                        Require((Road(copied.biomes[index]) && Road(actual[index])) ||
+                            NaturalizedPixelMatches(copied, x, y, actual[index]),
                             "meander result does not match opaque copies followed by naturalization");
                     }
                 }
@@ -1293,6 +1315,36 @@ void TestMeanderingCopies() {
 
 void TestNaturalizationFilter() {
     std::mt19937 random(9876);
+    for (const auto neighbor : {FOREST, CLIFF, DEEPFOREST, PLAIN, OPEN, ROAD, INNERROAD, BRIDGE, LAKE}) {
+        for (int y = 0; y < 3; ++y) {
+            for (int x = 0; x < 3; ++x) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= 3 || ny >= 3) continue;
+                        MapPlan original;
+                        original.Reset(3, 3, 0, "forest");
+                        original.biomes.assign(9, ROAD);
+                        const auto index = static_cast<std::size_t>(y * 3 + x);
+                        original.biomes[index] = INNERROAD;
+                        original.biomes[static_cast<std::size_t>(ny * 3 + nx)] =
+                            static_cast<std::uint8_t>(neighbor);
+                        auto result = original;
+                        ForestMapFilters::Naturalize(result, random);
+                        const bool replace = std::abs(dx) + std::abs(dy) == 1 &&
+                            (neighbor == FOREST || neighbor == CLIFF);
+                        Require(result.biomes[index] == (replace ? ROAD : INNERROAD),
+                            "INNERROAD rule must use only in-bounds cardinal FOREST/CLIFF neighbors");
+                        Require(std::equal(original.biomes.begin(), original.biomes.end(), result.biomes.begin(),
+                            [&](std::uint8_t before, std::uint8_t after) {
+                                return before == after || (before == INNERROAD && after == ROAD);
+                            }), "INNERROAD filter changed unrelated terrain");
+                    }
+                }
+            }
+        }
+    }
     for (const int sx : {-1, 1}) {
         for (const int sy : {-1, 1}) {
             MapPlan corner;
@@ -1361,8 +1413,8 @@ void TestNaturalizationFilter() {
                 Require(NaturalizedPixelMatches(original, 1, 1, result.biomes[4]),
                     "naturalizing filter violated an eight-neighbor rule");
                 for (int i = 0; i < 9; ++i) {
-                    if (i != 4) Require(result.biomes[static_cast<std::size_t>(i)] ==
-                        original.biomes[static_cast<std::size_t>(i)], "naturalization changed an image-edge pixel");
+                    if (i != 4) Require(NaturalizedPixelMatches(original, i % 3, i / 3,
+                        result.biomes[static_cast<std::size_t>(i)]), "naturalization changed an image-edge pixel incorrectly");
                 }
             }
         }
@@ -1438,8 +1490,8 @@ void TestCliffInnerRoadWidths() {
             if (cell.role == "tee" || cell.role == "tee_with_dead_end") ++tees;
         }
         for (std::size_t index = 0; index < plan.biomes.size(); ++index) {
-            Require((plan.biomes[index] == INNERROAD) == (base.biomes[index] == INNERROAD),
-                "cliff decoration changed the original one-pixel INNERROAD centerline");
+            Require(plan.biomes[index] != INNERROAD || Road(base.biomes[index]),
+                "cliff decoration added an INNERROAD outside the original road footprint");
         }
     }
     Require(corners > 0 && tees > 0, "cliff centerline test missed widened L and T junctions");

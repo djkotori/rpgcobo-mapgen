@@ -105,11 +105,11 @@ After edge extension and the naturalization filter below, the completed output i
 
 ## Naturalization filter
 
-The final terrain filter runs **after edge extension, immediately before DEEPFOREST classification**. It makes one row-major pass over the output, reading only a frozen pre-filter biome grid. All eight neighbors must exist; outermost pixels are unchanged. Metadata continues to describe the pre-filter shapes. `ROAD`, `INNERROAD`, `BRIDGE`, and `RIVER` are never replaced.
+The final terrain filter runs **after edge extension, immediately before DEEPFOREST classification**. It makes one row-major pass over the output, reading only a frozen pre-filter biome grid. Corner and cliff rules require all eight neighbors; outermost pixels are unchanged by those rules. The INNERROAD rule also runs on edges and corners, using only existing in-image neighbors. Metadata continues to describe the pre-filter shapes. `ROAD`, `BRIDGE`, and `RIVER` are never replaced.
 
 A one-pixel convex corner consists of the center and three neighbors forming a same-biome 2x2 square, with all five remaining neighbors sharing one different biome. All four orientations are supported. Rounding replaces the center with that surrounding biome:
 
-`INNERROAD` is never a replacement target: a corner surrounded by centerline pixels is left unchanged. This prevents cliff-junction `PLAIN` spaces from thickening L/T centerlines. Existing `INNERROAD` pixels are also unchanged by the filter.
+`INNERROAD` is never a replacement target: a corner surrounded by centerline pixels is left unchanged. This prevents cliff-junction `PLAIN` spaces from thickening L/T centerlines. Existing `INNERROAD` becomes `ROAD` with probability 1.0 if any cardinal neighbor (north, east, south, west) is `FOREST` or `CLIFF`; diagonal neighbors alone do not trigger this. Missing outside-image neighbors are ignored. This uses the same pre-filter snapshot, consumes no random values, and preserves walkability and the combined road footprint.
 
 | Center biome | Rule | Probability |
 |---|---|---:|
@@ -118,6 +118,7 @@ A one-pixel convex corner consists of the center and three neighbors forming a s
 | `LAKE` | Round a convex corner unless any of the eight neighbors is `FOREST` or `CLIFF`. | 1.0 |
 | `FOREST` | Replace with `CLIFF` when at least five of the eight neighbors are `CLIFF`. No corner pattern required. | 1.0 |
 | `CLIFF` | Round a convex corner only when the five outside neighbors are all `FOREST`. | 1.0 |
+| `INNERROAD` | Replace with `ROAD` if any in-image cardinal neighbor is `FOREST` or `CLIFF`. | 1.0 |
 
 PLAIN/OPEN decisions use the seed-driven generator only for eligible corners, preserving reproducibility. Changes do not cascade within the pass. Filtering may modify the extended cliff border and rounded room/lake bounds; deep forest distances are computed from the resulting image, not the rectangular source geometry.
 
