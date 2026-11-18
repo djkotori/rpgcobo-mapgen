@@ -10,6 +10,7 @@ add_executable(mapimggen
     main.cpp
     MapQuality.cpp
     CaveMapImageGenerator.cpp
+    ForestMapImageGenerator.cpp
     CastleMapImageGenerator.cpp
     DungeonMapImageGenerator.cpp
     TownMapImageGenerator.cpp
@@ -17,6 +18,7 @@ add_executable(mapimggen
     SettlementSite.cpp
     VillageMapImageGenerator.cpp
     WorldMapImageGenerator.cpp
+    WorldBiomes.cpp
     utils.cpp
 )
 
@@ -30,6 +32,12 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(world_biome_tests ../tests/WorldBiomeTests.cpp WorldMapImageGenerator.cpp WorldBiomes.cpp MapQuality.cpp utils.cpp)
+    target_include_directories(world_biome_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME world_biomes COMMAND world_biome_tests)
+    add_executable(forest_map_tests ../tests/ForestMapImageGeneratorTests.cpp ForestMapImageGenerator.cpp MapQuality.cpp utils.cpp)
+    target_include_directories(forest_map_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME forest_map COMMAND forest_map_tests)
     add_executable(settlement_civic_tests ../tests/SettlementCivicTests.cpp CastleMapImageGenerator.cpp
         VillageMapImageGenerator.cpp TownMapImageGenerator.cpp SettlementSite.cpp TownPaving.cpp MapQuality.cpp)
     target_include_directories(settlement_civic_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

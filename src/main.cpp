@@ -3,6 +3,7 @@
 #include "CastleMapImageGenerator.h"
 #include "CaveMapImageGenerator.h"
 #include "DungeonMapImageGenerator.h"
+#include "ForestMapImageGenerator.h"
 #include "TownMapImageGenerator.h"
 #include "WorldMapImageGenerator.h"
 #include "VillageMapImageGenerator.h"
@@ -62,6 +63,7 @@ const std::vector<MapTypeSpec>& MapTypes() {
         {"world", 256, 256, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<WorldMapImageGenerator>(std::move(p))); }},
         {"dungeon", 160, 160, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<DungeonMapImageGenerator>(std::move(p))); }},
         {"cave", 160, 160, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<CaveMapImageGenerator>(std::move(p))); }},
+        {"forest", 40, 40, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<ForestMapImageGenerator>(std::move(p))); }},
         {"town", 160, 160, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<TownMapImageGenerator>(std::move(p))); }},
         {"village", 160, 160, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<VillageMapImageGenerator>(std::move(p))); }},
         {"castle", 160, 160, [](MapGenParams p) { return std::unique_ptr<MapImageGenerator>(std::make_unique<CastleMapImageGenerator>(std::move(p))); }},
@@ -180,13 +182,13 @@ bool ParseArgs(int argc, char** argv, CliOptions& opt, std::string& outError) {
 
     const MapTypeSpec* type = FindMapType(opt.type);
     if (type == nullptr) {
-        outError = "Unknown map type: " + opt.type + ". Available types: world, dungeon, cave, town, village, castle";
+        outError = "Unknown map type: " + opt.type + ". Available types: world, dungeon, cave, forest, town, village, castle";
         return false;
     }
     if (!opt.widthProvided) opt.width = type->defaultWidth;
     if (!opt.depthProvided) opt.depth = type->defaultDepth;
-    if (opt.width < 64 || opt.width > 1024 || opt.depth < 64 || opt.depth > 1024) {
-        outError = "-w and -d must be in range [64, 1024]";
+    if (opt.width < 16 || opt.width > 1024 || opt.depth < 16 || opt.depth > 1024) {
+        outError = "-w and -d must be in range [16, 1024]";
         return false;
     }
 
@@ -225,12 +227,17 @@ const char* BiomeLabel(const std::string& type, int biome) {
         static const std::array<const char*, 10> labels = {"FLOOR1", "FLOOR2", "UPPERFLOOR", "WALL", "INNERWALL", "CORRIDOR", "DOOR", "RIVER", "LAKE", "BACKGROUND"};
         return biome >= 0 && biome < static_cast<int>(labels.size()) ? labels[static_cast<std::size_t>(biome)] : "UNKNOWN";
     }
+    if (type == "forest") {
+        if (biome == INNERROAD) return "INNERROAD";
+        static const std::array<const char*, 10> labels = {"PLAIN", "OPEN", "FOREST", "DEEPFOREST", "CLIFF", "ROAD", "BRIDGE", "RIVER", "LAKE", "UNUSED_9"};
+        return biome >= 0 && biome < static_cast<int>(labels.size()) ? labels[static_cast<std::size_t>(biome)] : "UNKNOWN";
+    }
     static const std::array<const char*, 21> labels = {"PLAIN", "DESERT", "FOREST", "MOUNTAIN", "EXMOUNTAIN", "ROAD", "BRIDGE", "RIVER", "LAKE", "SEA", "TOWN_FLOOR", "TOWN_WOOD_FLOOR", "TOWN_STONE_FLOOR", "TOWN_FURNITURE", "TOWN_PAVEMENT", "TOWN_SEA", "TOWN_CLIFF", "TOWN_TREES", "CASTLE_WALL_WALK", "COAST", "SNOWFIELD"};
     return biome >= 0 && biome < static_cast<int>(labels.size()) ? labels[static_cast<std::size_t>(biome)] : "UNKNOWN";
 }
 
 bool WriteReportFile(const std::filesystem::path& path, const MapPlan& plan, const MapQualityMetrics& quality, std::string& outError) {
-    std::array<int, 21> count{};
+    std::array<int, 22> count{};
     for (std::uint8_t b : plan.biomes) {
         if (b < count.size()) ++count[static_cast<std::size_t>(b)];
     }
@@ -662,7 +669,7 @@ int main(int argc, char** argv) {
     try {
         if (!ParseArgs(argc, argv, opt, error)) {
             std::cerr << "Argument error: " << error << '\n';
-            std::cerr << "Usage: mapimggen.exe -type world|dungeon|cave|town|village|castle -w 256 -d 256 -seed 12345 [-p key=value] -dir out -out name [--data --png --report --plan --strict]\n";
+            std::cerr << "Usage: mapimggen.exe -type world|dungeon|cave|forest|town|village|castle -w 256 -d 256 -seed 12345 [-p key=value] -dir out -out name [--data --png --report --plan --strict]\n";
             return 1;
         }
     } catch (const std::exception& ex) {

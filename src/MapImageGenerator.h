@@ -13,11 +13,14 @@ enum MapGenBiomeID {
     FLOOR_LV2 = 1,
     PLAIN = 0,
     DESERT = 1,
+    OPEN = DESERT,
     FOREST = 2,
     WALL = 3,
     INNERWALL = 4,
     MOUNTAIN = 3,
     EXMOUNTAIN = 4,
+    DEEPFOREST = MOUNTAIN,
+    CLIFF = EXMOUNTAIN,
     ROAD = 5,
     BRIDGE = 6,
     LADDER = 6,
@@ -36,6 +39,7 @@ enum MapGenBiomeID {
     CASTLE_WALL_WALK = 18,
     COAST = 19,
     SNOWFIELD = 20,
+    INNERROAD = 21,
 };
 
 struct MapGenParams {

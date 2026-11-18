@@ -16,6 +16,9 @@ bool IsWalkable(const std::string& type, std::uint8_t biome) {
     if (type == "cave") {
         return biome == FLOOR_LV1 || biome == FLOOR_LV2 || biome == LADDER;
     }
+    if (type == "forest") {
+        return biome == PLAIN || biome == OPEN || biome == ROAD || biome == INNERROAD || biome == BRIDGE;
+    }
     return biome == PLAIN || biome == DESERT || biome == FOREST || biome == ROAD || biome == BRIDGE ||
         (type == "world" && (biome == COAST || biome == SNOWFIELD)) ||
         (type == "town" || type == "village" || type == "castle") &&
@@ -26,6 +29,9 @@ bool IsWalkable(const std::string& type, std::uint8_t biome) {
 bool IsFloor(const std::string& type, std::uint8_t biome) {
     if (type == "cave") {
         return biome == FLOOR_LV1 || biome == FLOOR_LV2;
+    }
+    if (type == "forest") {
+        return biome == PLAIN || biome == OPEN;
     }
     return biome == PLAIN || biome == DESERT || biome == FOREST ||
         (type == "world" && (biome == COAST || biome == SNOWFIELD)) ||
@@ -43,7 +49,7 @@ bool IsDryLand(std::uint8_t biome) {
 }
 
 bool IsRoadLike(std::uint8_t biome) {
-    return biome == ROAD || biome == BRIDGE;
+    return biome == ROAD || biome == INNERROAD || biome == BRIDGE;
 }
 
 bool InBounds(int x, int y, int width, int depth) {
@@ -89,7 +95,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
         if (IsFloor(plan.type, biome)) {
             ++floorCells;
         }
-        if (biome == ROAD) {
+        if (biome == ROAD || (plan.type == "forest" && biome == INNERROAD)) {
             ++corridorCells;
         }
         if (biome == BRIDGE || (plan.type == "cave" && biome == LADDER)) {
@@ -152,7 +158,8 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
     std::vector<std::uint8_t> bridgeVisited(static_cast<std::size_t>(total), 0);
     int roadNetworkCells = 0;
     for (int index = 0; index < total; ++index) {
-        if (plan.biomes[static_cast<std::size_t>(index)] == ROAD) {
+        if (plan.biomes[static_cast<std::size_t>(index)] == ROAD ||
+            (plan.type == "forest" && plan.biomes[static_cast<std::size_t>(index)] == INNERROAD)) {
             roadNetworkMask[static_cast<std::size_t>(index)] = 1;
             ++roadNetworkCells;
         }
@@ -177,7 +184,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                 if (!InBounds(nx, ny, plan.width, plan.depth)) continue;
                 const int next = CellIndex(nx, ny, plan.width);
                 const std::uint8_t biome = plan.biomes[static_cast<std::size_t>(next)];
-                if (biome == ROAD) touchesRoad = true;
+                if (biome == ROAD || (plan.type == "forest" && biome == INNERROAD)) touchesRoad = true;
                 if (biome != BRIDGE || bridgeVisited[static_cast<std::size_t>(next)] != 0) continue;
                 bridgeVisited[static_cast<std::size_t>(next)] = 1;
                 pending.push(next);
@@ -746,7 +753,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                 if (IsWalkable(plan.type, plan.biomes[i])) { firstWalkable = i; break; }
             }
         }
-        if (plan.type == "castle") {
+        if (plan.type == "castle" || plan.type == "forest") {
             for (const auto& marker : plan.markers) {
                 if (marker.kind != "entrance" || !InBounds(marker.x, marker.y, plan.width, plan.depth)) continue;
                 const int i = CellIndex(marker.x, marker.y, plan.width);
