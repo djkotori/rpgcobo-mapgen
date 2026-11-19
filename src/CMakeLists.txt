@@ -19,6 +19,7 @@ add_executable(mapimggen
     VillageMapImageGenerator.cpp
     WorldMapImageGenerator.cpp
     WorldBiomes.cpp
+    WorldBridges.cpp
     utils.cpp
 )
 
@@ -32,7 +33,7 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(world_biome_tests ../tests/WorldBiomeTests.cpp WorldMapImageGenerator.cpp WorldBiomes.cpp MapQuality.cpp utils.cpp)
+    add_executable(world_biome_tests ../tests/WorldBiomeTests.cpp WorldMapImageGenerator.cpp WorldBiomes.cpp WorldBridges.cpp MapQuality.cpp utils.cpp)
     target_include_directories(world_biome_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME world_biomes COMMAND world_biome_tests)
     add_executable(forest_map_tests ../tests/ForestMapImageGeneratorTests.cpp ForestMapImageGenerator.cpp MapQuality.cpp utils.cpp)

@@ -63,14 +63,16 @@ AIMapImageGen/
 ├── doc/                 ← 仕様書（生成アルゴリズムの詳細）
 │   ├── mapgen_world.md
 │   ├── mapgen_dungeon.md
-│   └── mapgen_cave.md
+│   ├── mapgen_cave.md
+│   └── mapgen_forest.md
 │   ├── mapgen_town.md
 │   ├── mapgen_village.md
 │   └── mapgen_castle.md
 ├── sample/              ← サンプル画像
 │   ├── worldmap/
 │   ├── dungeon/
-│   └── cave/
+│   ├── cave/
+│   └── forest/
 └── src/                 ← C++ ソースコード
     ├── CMakeLists.txt
     ├── main.cpp
@@ -80,6 +82,7 @@ AIMapImageGen/
     ├── WorldMapImageGenerator.{h,cpp}
     ├── DungeonMapImageGenerator.{h,cpp}
     ├── CaveMapImageGenerator.{h,cpp}
+    ├── ForestMapImageGenerator.{h,cpp}
     ├── TownMapImageGenerator.{h,cpp}
     ├── VillageMapImageGenerator.{h,cpp}
     ├── CastleMapImageGenerator.{h,cpp}
@@ -139,16 +142,16 @@ copy ..\build\Release\mapimggen.exe ..
 ## 使い方
 
 ```
-mapimggen.exe -type <world|dungeon|cave|town|village|castle> [オプション]
+mapimggen.exe -type <world|dungeon|cave|forest|town|village|castle> [オプション]
 ```
 
 ### オプション一覧
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `-type <world\|dungeon\|cave\|town\|village\|castle>` | マップ種別 | `world` |
-| `-w <幅>` | 幅（ピクセル）。範囲: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
-| `-d <高さ>` | 高さ（ピクセル）。範囲: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
+| `-type <world\|dungeon\|cave\|forest\|town\|village\|castle>` | マップ種別 | `world` |
+| `-w <幅>` | 幅（ピクセル）。CLI範囲: 16–1024（Forestの最小値: 32） | world:256 / forest:40 / その他:160 |
+| `-d <高さ>` | 高さ（ピクセル）。CLI範囲: 16–1024（Forestの最小値: 32） | world:256 / forest:40 / その他:160 |
 | `-seed <数値>` | 乱数シード（再現用） | ランダム |
 | `-dir <ディレクトリ>` | 出力先ディレクトリ | `.`（カレント） |
 | `-out <ファイル名>` | 出力ファイル名（拡張子不要） | `out` |
@@ -158,6 +161,7 @@ mapimggen.exe -type <world|dungeon|cave|town|village|castle> [オプション]
 | `--plan` | biome配列・regions・markersをJSON出力する | 無効 |
 | `--strict` | 品質検証NG時に終了コード7で失敗させる | 無効 |
 | `-p <key=value>` | 詳細パラメータの個別指定 | — |
+
 
 ### 実行例
 
@@ -170,6 +174,9 @@ mapimggen.exe -type dungeon -w 160 -d 160 -dir out -out dungeon_001 --png --data
 
 REM 洞窟（デフォルトサイズ、PNG のみ）
 mapimggen.exe -type cave -dir out -out cave_001 --png
+
+REM 森（40×40のセル迷路、広間・池・川・北側の崖）
+mapimggen.exe -type forest -seed 12345 -dir out -out forest_001 --png --report
 
 REM 街（構造化Plan付き）
 mapimggen.exe -type town -seed 12345 -dir out -out town_001 --png --report --plan
