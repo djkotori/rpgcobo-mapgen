@@ -19,14 +19,17 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -668,6 +671,42 @@ void PrintQuality(const MapQualityMetrics& quality) {
     for (const std::string& issue : quality.issues) std::cout << "QUALITY_ISSUE: " << issue << '\n';
 }
 
+// Shortest decimal text that parses back to the same double.
+std::string FormatParamValue(double v) {
+    for (int precision = 15; precision <= 17; ++precision) {
+        std::ostringstream os;
+        os << std::setprecision(precision) << v;
+        if (precision == 17 || std::strtod(os.str().c_str(), nullptr) == v) return os.str();
+    }
+    return {};
+}
+
+// Generation inputs stored in the PNG as tEXt chunks, so that the image alone tells how it was made.
+// mapgen.command reproduces the image with the same exe; mapgen.params is the same data as JSON.
+std::vector<mapgen::PngText> BuildPngMetadata(const std::string& type, int width, int depth, std::uint32_t seed,
+                                              const std::unordered_map<std::string, double>& extra) {
+    const std::map<std::string, double> sorted(extra.begin(), extra.end());
+    std::string params = "{";
+    std::string command = "mapimggen.exe -type " + type + " -w " + std::to_string(width) + " -d " + std::to_string(depth) +
+                          " -seed " + std::to_string(seed);
+    for (const auto& kv : sorted) {
+        if (params.size() > 1) params += ',';
+        params += "\"" + kv.first + "\":" + FormatParamValue(kv.second);
+        command += " -p " + kv.first + "=" + FormatParamValue(kv.second);
+    }
+    params += '}';
+    command += " --png --plan";
+    return {
+        {"Software", "mapimggen"},
+        {"mapgen.type", type},
+        {"mapgen.width", std::to_string(width)},
+        {"mapgen.depth", std::to_string(depth)},
+        {"mapgen.seed", std::to_string(seed)},
+        {"mapgen.params", params},
+        {"mapgen.command", command},
+    };
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -726,7 +765,8 @@ int main(int argc, char** argv) {
         // The throne and the antechamber's benches are marked in a colour that the editor still reads as the floor.
         if (plan.type == "castle") castle_marks::Paint(plan, rgb);
         const std::filesystem::path pngPath = opt.outDir / (opt.outName + ".png");
-        if (!mapgen::WritePngRgb(pngPath.string(), plan.width, plan.depth, rgb, error)) {
+        if (!mapgen::WritePngRgb(pngPath.string(), plan.width, plan.depth, rgb, error,
+                                 BuildPngMetadata(opt.type, opt.width, opt.depth, opt.seed, opt.extra))) {
             std::cerr << "PNG write failed: " << error << '\n';
             return 3;
         }
