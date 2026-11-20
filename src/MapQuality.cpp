@@ -445,13 +445,13 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             static_cast<double>(std::max(1, total));
     }
     if (plan.type == "castle") {
-        MapPlanRegion fortress;
+        MapPlanRegion castleGround;
         MapPlanRegion moat;
-        MapPlanRegion bailey;
+        MapPlanRegion legacyBailey;
         MapPlanRegion keep;
-        bool hasFortress = false;
+        bool hasCastleGround = false;
         bool hasMoat = false;
-        bool hasBailey = false;
+        bool hasLegacyBailey = false;
         bool hasKeep = false;
         std::vector<MapPlanRegion> occupiedRegions;
         std::set<std::string> facilityRoles;
@@ -466,18 +466,21 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                 ++result.castleTowerCount;
                 if (region.role.find("watch_tower") != std::string::npos) ++result.castleWatchTowerCount;
             }
-            if (region.kind == "room") ++result.castleRoomCount;
+            // Corridors are connecting space, not requested rooms: they are not counted.
+            if (region.kind == "room" && region.role != "corridor" && region.role.rfind("annex_", 0) != 0) ++result.castleRoomCount;
             if (region.kind == "facility" || region.kind == "hall") ++result.castleFacilityCount;
             if (region.kind == "gatehouse") ++result.castleGatehouseCount;
             if (region.kind == "garden") result.castleGardenCells += regionArea(region);
             if (region.kind == "training_ground") result.castleTrainingGroundCells += regionArea(region);
-            if (region.kind == "fortress") { fortress = region; hasFortress = true; }
+            if (region.kind == "castle_ground") { castleGround = region; hasCastleGround = true; }
             if (region.kind == "moat") { moat = region; hasMoat = true; }
-            if (region.kind == "outer_bailey") { bailey = region; hasBailey = true; }
+            if (region.kind == "outer_bailey") { legacyBailey = region; hasLegacyBailey = true; }
             if (region.kind == "keep") { keep = region; hasKeep = true; }
             if (region.kind == "inner_ward") hasInnerWard = true;
             if (region.kind == "facility") facilityRoles.insert(region.role);
             if (region.kind == "furniture") ++result.castleEquipmentCount;
+            // The rooms of an annex on the castle ground are not keep rooms: they take no part in the keep's checks.
+            if (region.kind == "room" && region.role.rfind("annex_", 0) == 0) continue;
             if (region.kind == "room") {
                 roomRoles.insert(region.role);
                 if (region.role == "throne_room") ++throneRoomCount;
@@ -502,13 +505,15 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                     plan.castleDefenseMask[static_cast<std::size_t>(cell)] == 2) ++result.castleWallWalkCells;
         }
         result.castleFacilityRoleCount = static_cast<int>(facilityRoles.size());
-        if (throneRoomCount != 1) ++result.castleProgramMissingRoles;
-        if (entranceHallCount != 1) ++result.castleProgramMissingRoles;
-        for (const auto& role : {program.chambers[0], program.chambers[1]})
-            if (!roomRoles.count(role)) ++result.castleProgramMissingRoles;
-        for (int i = 0; i < 4; ++i) if (!facilityRoles.count(program.facilities[i].role)) ++result.castleProgramMissingRoles;
+        // No room is certain: the throne room, the entrance hall and the catalog's principal rooms may each be left out,
+        // but a castle never has two of either.
+        if (throneRoomCount > 1) ++result.castleProgramMissingRoles;
+        if (entranceHallCount > 1) ++result.castleProgramMissingRoles;
+        if (plan.castleWallForm != "castle_ground") {
+            for (int i = 0; i < 4; ++i) if (!facilityRoles.count(program.facilities[i].role)) ++result.castleProgramMissingRoles;
+        }
         for (int i = 0; i < total; ++i) result.castleKeepFootprintCells += keepFootprint[i];
-        if (hasFortress) for (int y = fortress.y0; y <= fortress.y1; ++y) for (int x = fortress.x0; x <= fortress.x1; ++x) {
+        if (hasCastleGround) for (int y = castleGround.y0; y <= castleGround.y1; ++y) for (int x = castleGround.x0; x <= castleGround.x1; ++x) {
             if (InBounds(x,y,plan.width,plan.depth) && !IsWater(plan.biomes[CellIndex(x,y,plan.width)])) ++result.castleFootprintCells;
         }
         for (const MapPlanMarker& marker : plan.markers) {
@@ -635,7 +640,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                 }
                 if (bypass) ++result.castleDefenseBypassCount;
             }
-        } else if (hasMoat && hasFortress) {
+        } else if (hasMoat && hasCastleGround) {
             const auto isTowerCell = [&](int x, int y) {
                 for (const MapPlanRegion& region : plan.regions) {
                     if (region.kind == "tower" && x >= region.x0 && x <= region.x1 && y >= region.y0 && y <= region.y1) return true;
@@ -647,7 +652,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             for (int y = moat.y0; y <= moat.y1; ++y) {
                 for (int x = moat.x0; x <= moat.x1; ++x) {
                     if (!InBounds(x, y, plan.width, plan.depth) ||
-                        (x >= fortress.x0 && x <= fortress.x1 && y >= fortress.y0 && y <= fortress.y1)) continue;
+                        (x >= castleGround.x0 && x <= castleGround.x1 && y >= castleGround.y0 && y <= castleGround.y1)) continue;
                     if (isTowerCell(x, y)) continue;
                     const std::uint8_t biome = plan.biomes[static_cast<std::size_t>(CellIndex(x, y, plan.width))];
                     if (biome == RIVER || biome == LAKE || biome == BRIDGE) ++moatArea;
@@ -659,7 +664,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             for (int y = moat.y0; y <= moat.y1; ++y) {
                 for (int x = moat.x0; x <= moat.x1; ++x) {
                     if (!InBounds(x, y, plan.width, plan.depth) ||
-                        (x >= fortress.x0 && x <= fortress.x1 && y >= fortress.y0 && y <= fortress.y1)) continue;
+                        (x >= castleGround.x0 && x <= castleGround.x1 && y >= castleGround.y0 && y <= castleGround.y1)) continue;
                     if (isTowerCell(x, y)) continue;
                     const std::uint8_t biome = plan.biomes[static_cast<std::size_t>(CellIndex(x, y, plan.width))];
                     if (biome != RIVER && biome != LAKE && biome != BRIDGE) ++result.castleMoatGapCells;
@@ -667,26 +672,26 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             }
             result.castleMoatCoverage = static_cast<double>(moatWater) / static_cast<double>(std::max(1, moatArea - result.castleMoatGapCells));
         }
-        if (hasFortress && plan.castleDefenseMask.size() != plan.biomes.size()) {
-            for (int x = fortress.x0; x <= fortress.x1; ++x) {
-                for (int y : {fortress.y0, fortress.y1}) {
+        if (hasCastleGround && plan.castleDefenseMask.size() != plan.biomes.size()) {
+            for (int x = castleGround.x0; x <= castleGround.x1; ++x) {
+                for (int y : {castleGround.y0, castleGround.y1}) {
                     if (!InBounds(x, y, plan.width, plan.depth)) continue;
                     const std::uint8_t biome = plan.biomes[static_cast<std::size_t>(CellIndex(x, y, plan.width))];
-                    if (biome != MOUNTAIN && biome != EXMOUNTAIN && biome != BRIDGE) ++result.castleWallGapCells;
+                    if (biome != MOUNTAIN && biome != EXMOUNTAIN && biome != TOWN_CLIFF && biome != BRIDGE) ++result.castleWallGapCells;
                 }
             }
-            for (int y = fortress.y0 + 1; y < fortress.y1; ++y) {
-                for (int x : {fortress.x0, fortress.x1}) {
+            for (int y = castleGround.y0 + 1; y < castleGround.y1; ++y) {
+                for (int x : {castleGround.x0, castleGround.x1}) {
                     if (!InBounds(x, y, plan.width, plan.depth)) continue;
                     const std::uint8_t biome = plan.biomes[static_cast<std::size_t>(CellIndex(x, y, plan.width))];
-                    if (biome != MOUNTAIN && biome != EXMOUNTAIN && biome != BRIDGE) ++result.castleWallGapCells;
+                    if (biome != MOUNTAIN && biome != EXMOUNTAIN && biome != TOWN_CLIFF && biome != BRIDGE) ++result.castleWallGapCells;
                 }
             }
         }
-        if (hasBailey) {
-            // Empty ground is measured by distance from actual uses, not its
-            // colour. Painting a checkerboard or setting pavingRatio=1 must
-            // not turn an unused bailey into a high-quality working courtyard.
+        if (hasLegacyBailey) {
+            // Legacy settlement plans still measure unused bailey ground.
+            // Interior-only castles have no bailey, so this metric does not
+            // treat their full map canvas as an empty courtyard.
             std::vector<int> useDistance(total, total);
             std::queue<int> uses;
             auto addUse = [&](int x, int y) {
@@ -711,8 +716,8 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                     useDistance[next] = useDistance[i] + 1; uses.push(next);
                 }
             }
-            for (int y = bailey.y0; y <= bailey.y1; ++y) {
-                for (int x = bailey.x0; x <= bailey.x1; ++x) {
+            for (int y = legacyBailey.y0; y <= legacyBailey.y1; ++y) {
+                for (int x = legacyBailey.x0; x <= legacyBailey.x1; ++x) {
                     if (!InBounds(x, y, plan.width, plan.depth) || !IsWalkable(plan.type, plan.biomes[static_cast<std::size_t>(CellIndex(x, y, plan.width))])) continue;
                     ++result.castleCourtyardCells;
                     bool occupied = false;
@@ -754,8 +759,18 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             }
         }
         if (plan.type == "castle" || plan.type == "forest") {
+            bool foundEntrance = false;
             for (const auto& marker : plan.markers) {
                 if (marker.kind != "entrance" || !InBounds(marker.x, marker.y, plan.width, plan.depth)) continue;
+                const int i = CellIndex(marker.x, marker.y, plan.width);
+                if (IsWalkable(plan.type, plan.biomes[i])) { firstWalkable = i; foundEntrance = true; break; }
+            }
+            // Interior-only castles have no gate. Judge access from the
+            // keep's public door rather than the first walkable raster cell,
+            // which may be an unrelated pocket of exterior terrain.
+            for (const auto& marker : plan.markers) {
+                if (foundEntrance) break;
+                if (marker.role != "keep_public_entry" || !InBounds(marker.x, marker.y, plan.width, plan.depth)) continue;
                 const int i = CellIndex(marker.x, marker.y, plan.width);
                 if (IsWalkable(plan.type, plan.biomes[i])) { firstWalkable = i; break; }
             }
@@ -806,7 +821,7 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
                         }
                     }
                 }
-                if (hasReachableFloor && region.kind == "room") ++result.castleReachableRooms;
+                if (hasReachableFloor && region.kind == "room" && region.role != "corridor" && region.role.rfind("annex_", 0) != 0) ++result.castleReachableRooms;
                 if (hasReachableFloor && region.kind == "facility") ++result.castleReachableFacilities;
             }
         }
@@ -919,13 +934,19 @@ MapQualityMetrics EvaluateMapQuality(const MapPlan& plan) {
             if (result.castleWallWalkCells != 0 || result.castleTowerCount != 0 || result.castleGatehouseCount != 0)
                 addIssue("low outer-wall defense unexpectedly has fortified equipment");
         }
-        if (result.castleRoomCount < 4 || result.castleRoomCount > 32) addIssue("castle room count is outside [4, 32]");
-        if (result.castleFacilityCount < 4 || result.castleFacilityCount > 32) addIssue("castle facility count is outside [4, 32]");
+        // The rooms on the axis (hall, antechamber, throne room, private suite, rooms beside the throne) come on top of the
+        // 2-30 side rooms, and any of them may be missing.
+        if (result.castleRoomCount < 3 || result.castleRoomCount > 56) addIssue("castle room count is outside [3, 56]");
+        // Interior-only castles build nothing outside the castle body, so
+        // detached service facilities are optional (an explicit range may add them).
+        const bool interiorOnlyCastle = plan.castleWallForm == "castle_ground";
+        if ((!interiorOnlyCastle && result.castleFacilityCount < 4) || result.castleFacilityCount > 32)
+            addIssue("castle facility count is outside [4, 32]");
         if (result.castleReachableRooms != result.castleRoomCount) addIssue("one or more castle rooms are unreachable");
         if (result.castleReachableFacilities < result.castleFacilityCount) addIssue("one or more castle facilities are unreachable");
         if (result.castleInvalidRoomDoors > 0) addIssue("one or more castle room doors have invalid geometry");
         if (result.castleInvalidFacilityDoors > 0) addIssue("one or more castle facility doors have invalid geometry");
-        if (result.castleFacilityRoleCount < 4) addIssue("castle lacks distinct military and supply facilities");
+        if (!interiorOnlyCastle && result.castleFacilityRoleCount < 4) addIssue("castle lacks distinct military and supply facilities");
         if (result.castleProgramMissingRoles > 0) addIssue("castle is missing rooms or facilities required by its architectural program");
         if (result.castleDefenseBypassCount > 0) addIssue("castle keep can be reached while a defensive gate is closed");
         if (result.castleInvalidGateMarkers > 0) addIssue("one or more castle gate markers have invalid moat or walkable adjacency");

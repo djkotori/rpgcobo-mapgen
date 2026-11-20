@@ -104,6 +104,8 @@ struct MapPlan {
     // 0: other, 1: moat, 2: curtain wall, 3: inner wall,
     // 4: authorized moat crossing, 5: outer gate, 6: inner gate.
     std::vector<std::uint8_t> castleDefenseMask;
+    // Interior castle ground, separate from settlement development areas.
+    std::vector<std::uint8_t> castleGroundMask;
     std::vector<std::uint8_t> castleStreetMask;
     std::vector<MapPlanMarker> markers;
     std::vector<MapPlanRegion> regions;
@@ -141,6 +143,7 @@ struct MapPlan {
         shoreCuts.clear();
         settlementMask.clear();
         castleDefenseMask.clear();
+        castleGroundMask.clear();
         castleStreetMask.clear();
         markers.clear();
         regions.clear();

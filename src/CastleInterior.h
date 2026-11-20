@@ -1,46 +1,17 @@
 #pragma once
 #include "MapImageGenerator.h"
+#include "CastleProgram.h"
 #include <array>
 #include <algorithm>
 #include <queue>
 #include <tuple>
 
+// Native castle interiors: doors, furniture and floor surfaces are emitted into the Plan
+// as castle_door / castle_fixture / castle_detail / castle_surface regions, which the
+// editor places as real assets. (The drill-yard reservation of the old castle town is gone.)
 namespace castle_interior {
 inline bool Floor(std::uint8_t b){return b==PLAIN||b==DESERT||b==FOREST||b==ROAD||b==BRIDGE||
     b==TOWN_FLOOR||b==TOWN_WOOD_FLOOR||b==TOWN_STONE_FLOOR||b==TOWN_PAVEMENT;}
-
-// Reserve a connected drill yard before the native town occupies the bailey.
-inline bool ReserveTraining(MapPlan& plan,MapPlan& town,std::string& error){
-    const int w=plan.width,d=plan.depth;MapPlanRegion best;int score=100000000;int ax=-1,ay=-1;
-    for(int size:{12,10,8}){
-        for(int y=3;y+size<d-3;++y)for(int x=3;x+size<w-3;++x){
-            bool fits=true;
-            for(int yy=y;yy<y+size&&fits;++yy)for(int xx=x;xx<x+size;++xx)
-                if(!town.settlementMask[yy*w+xx]||plan.castleStreetMask[yy*w+xx]){fits=false;break;}
-            if(!fits)continue;
-            auto street=[&](int xx,int yy){return xx>=0&&yy>=0&&xx+1<w&&yy+1<d&&
-                plan.castleStreetMask[yy*w+xx]&&plan.castleStreetMask[yy*w+xx+1]&&
-                plan.castleStreetMask[(yy+1)*w+xx]&&plan.castleStreetMask[(yy+1)*w+xx+1];};
-            int px=-1,py=-1;
-            for(int k=2;k<size-3&&px<0;++k){
-                for(auto p:{std::pair<int,int>{x+k,y-2},{x+k,y+size},{x-2,y+k},{x+size,y+k}})
-                    if(street(p.first,p.second)){px=p.first;py=p.second;break;}
-            }
-            if(px<0)continue;
-            const int cost=std::abs(x+size/2-w/2)+std::abs(y+size/2-d*2/3);
-            if(cost>=score)continue;score=cost;ax=px;ay=py;
-            best={"castle_activity",50000,x,y,x+size-1,y+size-1};best.role="training_ground";
-        }
-        if(ax>=0)break;
-    }
-    if(ax<0){error="No connected drill yard fits beside the castle access street";return false;}
-    for(int y=best.y0;y<=best.y1;++y)for(int x=best.x0;x<=best.x1;++x){
-        town.settlementMask[y*w+x]=0;town.biomes[y*w+x]=MOUNTAIN;plan.biomes[y*w+x]=DESERT;
-    }
-    plan.regions.push_back(best);
-    MapPlanMarker entry{"castle_activity_access",ax,ay,best.id};entry.role="training_ground_access";
-    plan.markers.push_back(entry);return true;
-}
 
 struct Object {int type,variant,w,d,h;};
 inline Object Native(const MapGenParams& p,int type,int variant,int w,int d,int h){
@@ -49,7 +20,10 @@ inline Object Native(const MapGenParams& p,int type,int variant,int w,int d,int 
     return {type,variant,get(key+"Width",w),get(key+"Depth",d),get(key+"Height",h)};
 }
 
-inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error){
+// `doorsOnly`: place the doors and nothing else (the fallback for a castle that cannot be furnished: it keeps its doors).
+// A room that cannot take its furniture (the throne, a stove, a bed) is left bare and noted in castleHistory ("bare_room"):
+// the castle is still furnished, and every door stays.
+inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error,bool doorsOnly=false){
     const int w=plan.width,d=plan.depth,area=w*d;
     std::vector<std::uint8_t> blocked(area,0),clearance(area,0);
     std::vector<int> rooms,fixtures;
@@ -61,18 +35,18 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
     for(int i=0;i<architectural;++i){
         const auto r=plan.regions[i];if(r.kind=="room"||r.kind=="castle_activity")rooms.push_back(i);
         if(r.kind=="asset_plot"||r.kind=="settlement_facility")mark(r,blocked);
-        if(r.kind!="room_connection"&&r.kind!="castle_front_door")continue;
+        if(r.kind!="room_connection"&&r.kind!="castle_front_door"&&r.kind!="castle_side_door")continue;
         mark(r,clearance,3);
         auto landing=r;landing.kind="castle_clearance";landing.role="door_landing";
         landing.x0=std::max(0,r.x0-3);landing.y0=std::max(0,r.y0-3);
         landing.x1=std::min(w-1,r.x1+3);landing.y1=std::min(d-1,r.y1+3);
         plan.regions.push_back(landing);
-        if(r.kind=="room_connection"){
+        if(r.kind=="room_connection"||r.kind=="castle_side_door"){
             bool ceremonial=false;
             for(int id:rooms){const auto& room=plan.regions[id];
                 if(room.id!=r.parentId&&room.id!=r.linkedRegionId)continue;
                 ceremonial|=room.role=="throne_room"||(plan.archetype=="palace"&&
-                    (room.role=="entrance_hall"||room.role=="royal_chambers"||room.role.find("chapel")!=std::string::npos));
+                    (IsCastleEntryRole(room.role)||room.role=="royal_chambers"||room.role.find("chapel")!=std::string::npos));
             }
             const auto model=Native(params,1,ceremonial?13:8,4,1,4);
             const int width=r.x1-r.x0+1,depth=r.y1-r.y0+1;
@@ -94,6 +68,8 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
             }
         }
     }
+    if(doorsOnly)return true;
+    auto bare=[&](const std::string& what){plan.castleHistory.push_back({"interior_design","bare_room: "+what,0,0.0});};
     auto pass=[&](int x,int y){
         if(x<0||y<0||x+1>=w||y+1>=d)return false;
         for(int yy=y;yy<y+2;++yy)for(int xx=x;xx<x+2;++xx)
@@ -117,7 +93,7 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
                 if(pass(x,y)&&!seen[y*w+x]){seen[y*w+x]=1;q.push(y*w+x);}
             }
         }
-        for(int id:rooms){const auto&r=plan.regions[id];bool reached=false;
+        for(int id:rooms){const auto&r=plan.regions[id];if(r.role=="corridor")continue;bool reached=false;
             for(int y=r.y0+2;y<r.y1;++y)for(int x=r.x0+2;x<r.x1;++x)reached|=seen[y*w+x]!=0;
             if(!reached)return false;
         }
@@ -125,9 +101,11 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
         return !q.size();
     };
     if(!accessible()){error="Castle room graph or drill yard is unreachable before furnishing";return false;}
+    int badLandingRoom=-1;  // the room whose door landings failed (for the message)
+    std::string badLandingWhy;
     auto wideAccessible=[&](int onlyRoom=-1){
         for(int parent:rooms){const auto room=plan.regions[parent];
-            if(room.kind!="room"||(onlyRoom>=0&&parent!=onlyRoom))continue;
+            if(room.kind!="room"||room.role=="corridor"||(onlyRoom>=0&&parent!=onlyRoom))continue;
             auto wide=[&](int x,int y){
                 if(x<room.x0||y<room.y0||x+3>room.x1||y+3>room.y1)return false;
                 for(int yy=y;yy<y+4;++yy)for(int xx=x;xx<x+4;++xx)
@@ -138,13 +116,13 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
             for(const auto&door:plan.regions){
                 if(door.kind=="castle_door"){
                     if(door.parentId!=room.id&&door.linkedRegionId!=room.id)continue;
-                }else if(door.kind!="castle_front_door"||room.role!="entrance_hall")continue;
+                }else if(door.kind!="castle_front_door"||!IsCastleEntryRole(room.role))continue;
                 const int x=door.rotation%2?(door.x0<=room.x0+1?door.x1+1:door.x0-4):
                     (door.kind=="castle_front_door"?(door.x0+door.x1-3)/2:door.x0);
                 const int y=door.rotation%2?door.y0:(door.y0<=room.y0+1?door.y1+1:door.y0-4);
-                if(!wide(x,y))return false;landings.push_back(y*w+x);
+                if(!wide(x,y)){badLandingRoom=parent;badLandingWhy=" no 4x4 at "+std::to_string(x)+","+std::to_string(y)+" door "+std::to_string(door.x0)+","+std::to_string(door.y0)+" rot "+std::to_string(door.rotation);return false;}landings.push_back(y*w+x);
             }
-            if(landings.empty())return false;
+            if(landings.empty()){badLandingRoom=parent;return false;}
             if(landings.size()==1)continue;
             std::vector<std::uint8_t> seen(area,0);std::queue<int> q;q.push(landings.front());seen[landings.front()]=1;
             while(!q.empty()){const int i=q.front();q.pop();
@@ -153,11 +131,15 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
                     if(wide(x,y)&&!seen[y*w+x]){seen[y*w+x]=1;q.push(y*w+x);}
                 }
             }
-            for(int at:landings)if(!seen[at])return false;
+            for(int at:landings)if(!seen[at]){badLandingRoom=parent;badLandingWhy=" disconnected landing at "+std::to_string(at%w)+","+std::to_string(at/w)+" of "+std::to_string(landings.size());return false;}
         }
         return true;
     };
-    if(!wideAccessible()){error="Castle doors lack connected 4-block interior landings";return false;}
+    if(!wideAccessible()){
+        error="Castle doors lack connected 4-block interior landings";
+        if(badLandingRoom>=0){const auto&r=plan.regions[badLandingRoom];error+=" ("+r.role+" "+std::to_string(r.x1-r.x0+1)+"x"+std::to_string(r.y1-r.y0+1)+badLandingWhy+")";}
+        return false;
+    }
     auto surface=[&](const MapPlanRegion& bounds,int parent,const std::string& role,bool keepClear){
         if(bounds.x1<bounds.x0||bounds.y1<bounds.y0)return;
         auto r=bounds;r.kind="castle_surface";r.role=role;r.parentIndex=parent;r.parentId=plan.regions[parent].id;
@@ -168,12 +150,13 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
         plan.regions.push_back(bounds);mark(bounds,clearance);
     };
     std::vector<int> furnishedArea(architectural,0);
-    auto place=[&](int parent,const std::string& role,Object model,int preferredX,int preferredY,int rotation=0,int maxMove=3){
+    auto place=[&](int parent,const std::string& role,Object model,int preferredX,int preferredY,int rotation=0,int maxMove=3,int inset=2){
         const auto room=plan.regions[parent];const int rw=rotation%2?model.d:model.w,rd=rotation%2?model.w:model.d;
         const int capacity=(room.x1-room.x0-2)*(room.y1-room.y0-2);
         if(furnishedArea[parent]+rw*rd>std::max(12,capacity*(room.role=="throne_room"?12:23)/100))return -1;
         std::vector<std::tuple<int,int,int>> positions;
-        for(int y=room.y0+2;y+rd-1<=room.y1-1;++y)for(int x=room.x0+2;x+rw-1<=room.x1-1;++x)
+        const int outer=inset>=2?1:0;  // a corridor is narrow: its fixtures stand against the wall line
+        for(int y=room.y0+inset;y+rd-1<=room.y1-outer;++y)for(int x=room.x0+inset;x+rw-1<=room.x1-outer;++x)
             if(std::abs(x-preferredX)+std::abs(y-preferredY)<=maxMove)
                 positions.emplace_back(std::abs(x-preferredX)+std::abs(y-preferredY),y,x);
         std::sort(positions.begin(),positions.end());
@@ -215,10 +198,10 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
     for(int parent:rooms){const auto room=plan.regions[parent];if(room.role!="throne_room")continue;
         const int cx=(room.x0+room.x1)/2,top=room.y0+3;
         if(place(parent,"royal_throne",throne,cx-(throne.w-1)/2,top,0,0)<0){
-            error="Throne room cannot fit a centred throne away from its doors";return false;
+            bare("throne room has no centred throne");continue;
         }
         const int audienceY=top+throne.d;
-        if(cx-4<room.x0+1||cx+5>room.x1-1||audienceY+7>room.y1-2){error="Throne room lacks a full audience area";return false;}
+        if(cx-4<room.x0+1||cx+5>room.x1-1||audienceY+7>room.y1-2){bare("throne room has no audience area");continue;}
         reserve({"",0,cx-4,top-1,cx+5,audienceY-1},parent,"throne_buffer");
         reserve({"",0,cx-4,audienceY,cx+5,audienceY+7},parent,"audience_space");
         surface({"",0,cx-2,audienceY,cx+3,room.y1-2},parent,"royal_carpet",true);
@@ -227,13 +210,13 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
     // furniture. The reserved bands are 4 blocks wide (6 in public halls),
     // with the 4-block doorway as their only local narrowing.
     for(int parent:rooms){
-        const auto room=plan.regions[parent];if(room.kind!="room")continue;
+        const auto room=plan.regions[parent];if(room.kind!="room"||room.role=="corridor")continue;
         const int cx=(room.x0+room.x1-1)/2,cy=room.role=="throne_room"?room.y0+throne.d+8:(room.y0+room.y1-1)/2;
         auto inside=[&](int x,int y){return x>=room.x0+1&&y>=room.y0+1&&x+1<=room.x1-1&&y+1<=room.y1-1&&pass(x,y);};
         int hub=-1,best=100000;
         for(int y=room.y0+1;y<room.y1-1;++y)for(int x=room.x0+1;x<room.x1-1;++x)
             if(inside(x,y)&&std::abs(x-cx)+std::abs(y-cy)<best){best=std::abs(x-cx)+std::abs(y-cy);hub=y*w+x;}
-        if(hub<0){error="Castle room has no circulation hub";return false;}
+        if(hub<0){bare(room.role+" has no circulation hub");continue;}
         std::vector<int> previous(area,-1);std::queue<int> pending;previous[hub]=hub;pending.push(hub);
         while(!pending.empty()){const int i=pending.front();pending.pop();
             for(auto step:std::array<std::pair<int,int>,4>{{{0,1},{1,0},{-1,0},{0,-1}}}){
@@ -243,17 +226,17 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
         }
         std::vector<std::uint8_t> band(area,0);
         for(int i=0;i<architectural;++i){const auto door=plan.regions[i];
-            if(door.kind=="room_connection"){
+            if(door.kind=="room_connection"||door.kind=="castle_side_door"){
                 if(door.parentId!=room.id&&door.linkedRegionId!=room.id)continue;
-            }else if(door.kind!="castle_front_door"||room.role!="entrance_hall")continue;
+            }else if(door.kind!="castle_front_door"||!IsCastleEntryRole(room.role))continue;
             const int dx=std::clamp((door.x0+door.x1-1)/2,room.x0+1,room.x1-2);
             const int dy=std::clamp((door.y0+door.y1-1)/2,room.y0+1,room.y1-2);
             int start=-1,cost=100000;
             for(int y=std::max(room.y0+1,dy-4);y<=std::min(room.y1-2,dy+4);++y)
                 for(int x=std::max(room.x0+1,dx-4);x<=std::min(room.x1-2,dx+4);++x)
                     if(previous[y*w+x]>=0&&std::abs(x-dx)+std::abs(y-dy)<cost){cost=std::abs(x-dx)+std::abs(y-dy);start=y*w+x;}
-            if(start<0){error="Castle door has no usable interior landing";return false;}
-            const int margin=room.role=="throne_room"||room.role=="entrance_hall"?2:1;
+            if(start<0)continue;
+            const int margin=room.role=="throne_room"||IsCastleEntryRole(room.role)?2:1;
             for(int at=start;;at=previous[at]){
                 for(int y=std::max(room.y0+1,at/w-margin);y<=std::min(room.y1-1,at/w+1+margin);++y)
                     for(int x=std::max(room.x0+1,at%w-margin);x<=std::min(room.x1-1,at%w+1+margin);++x)
@@ -289,7 +272,7 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
             int cooking=put("cooking_stove",stove,left,top);
             if(cooking<0)cooking=put("cooking_stove",stove,right-3,top);
             if(cooking<0)cooking=put("cooking_stove",stove,left,bottom-1);
-            if(cooking<0){error="Kitchen cannot fit a working stove away from circulation";return false;}
+            if(cooking<0)bare(role+" has no stove");
             put("preparation_counter",counter,right-3,top);put("kitchen_worktable",table,cx-1,cy);
             put("pantry_barrel",barrel,left,bottom-2);put("water_bucket",Native(params,4,41,2,2,2),right-1,bottom-1);
             put("cooking_pot",Native(params,4,23,2,2,3),right-1,top+4);
@@ -297,26 +280,57 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
                 put("cooking_stove",stove,left+6,top);
                 for(int yy=top+8;yy<bottom-6;yy+=10){const int work=put("kitchen_worktable",table,cx-1,yy);detail(work,"prepared_dishes",dish);}
             }
+        }else if(role=="corridor"){
+            // A corridor holds only candelabra, on the wall-side lines so that the walkway stays
+            // free: a pair of cells apart along each side, alternating between the two walls.
+            const bool vertical=room.y1-room.y0>room.x1-room.x0;
+            // Wherever a door's clearance leaves room: at least 7 apart, alternating between the walls.
+            int side=0,placed=0,lastAlong=-100;
+            for(int along=(vertical?room.y0:room.x0)+2;along<(vertical?room.y1:room.x1)-1&&placed<8;++along){
+                if(along-lastAlong<7)continue;
+                const int first=(vertical?room.x0:room.y0)+1,last=vertical?room.x1:room.y1;
+                for(int attempt=0;attempt<2;++attempt){
+                    const int across=((side+attempt)&1)?last:first;
+                    if(place(parent,"corridor_candelabrum",candle,vertical?across:along,vertical?along:across,vertical?1:0,1,1)>=0){
+                        ++placed;lastAlong=along;side=(side+attempt+1)&1;break;
+                    }
+                }
+            }
+            continue;
+        }else if(role=="antechamber"){
+            // The waiting room before the throne room: benches for the people waiting and
+            // candelabra at the corners. Its role name contains "chamber", but it is not a
+            // bedroom, so it never gets beds.
+            put("waiting_bench",bench,left,cy,1);put("waiting_bench",bench,right-1,cy,1);
+            put("waiting_candelabrum",candle,left,top);put("waiting_candelabrum",candle,right-1,top);
+            put("waiting_candelabrum",candle,left,bottom-1);put("waiting_candelabrum",candle,right-1,bottom-1);
+            put("waiting_table",table,cx-1,top);
         }else if((role.find("chamber")!=std::string::npos&&role.find("council")==std::string::npos)||role.find("quarters")!=std::string::npos||role=="guest_apartment"){
             const bool royal=role=="royal_chambers";
-            int index=royal?put("royal_bed",royalBed,left,top):put("garrison_bed",bed,left,top);
-            if(index<0)index=put(royal?"royal_bed":"garrison_bed",bed,left,top);
+            // The king's and the queen's bedchambers hold one royal bed (of the ordinary size), not rows of garrison beds.
+            const bool suiteBed=role=="royal_bedchamber"||role=="queens_bedchamber"||role=="royal_children_chamber";
+            const char* bedName=royal||role=="royal_bedchamber"||role=="queens_bedchamber"?"royal_bed":"garrison_bed";
+            int index=royal?put("royal_bed",royalBed,left,top):put(bedName,bed,left,top);
+            if(index<0)index=put(bedName,bed,left,top);
             for(auto anchor:{std::pair<int,int>{right-3,top},{left,bottom-3},{right-3,bottom-3}}){
                 if(index>=0)break;
-                index=put(royal?"royal_bed":"garrison_bed",royal?royalBed:bed,anchor.first,anchor.second);
+                index=put(bedName,royal?royalBed:bed,anchor.first,anchor.second);
                 if(index<0&&royal)index=put("royal_bed",bed,anchor.first,anchor.second);
             }
-            if(index<0){error="Bedroom cannot fit a usable bed";return false;}
-            if(!royal)for(int x=left+4;x<=right-1;x+=5)put("garrison_bed",bed,x,top);
+            // A bedchamber of the private suite, or a narrow one (under 12 wide, between two doors), may stay without its bed;
+            // every other bedroom needs one.
+            if(index<0&&!suiteBed&&room.x1-room.x0+1>=12)bare(role+" has no bed ("+std::to_string(room.x1-room.x0+1)+"x"+std::to_string(room.y1-room.y0+1)+")");
+            if(!royal&&!suiteBed)for(int x=left+4;x<=right-1;x+=5)put("garrison_bed",bed,x,top);
             put("wardrobe",chest,right-1,top);put("bedroom_bookcase",shelf,right-3,bottom-1);
-            if(royal){const int desk=put("bedroom_desk",table,cx-1,bottom-3);detail(desk,"bedroom_book",book);put("bedroom_chair",chair,cx-1,cy);}
+            if(royal||suiteBed){const int desk=put("bedroom_desk",table,cx-1,bottom-3);detail(desk,"bedroom_book",book);put("bedroom_chair",chair,cx-1,cy);}
         }else if(role=="entrance_hall"&&plan.archetype=="palace"){
             MapPlanRegion dance{"",0,left+4,top+4,right-4,bottom-4};
             surface(dance,parent,"ballroom_floor",true);
             const auto piano=Native(params,4,40,4,2,3);
             int music=put("ballroom_piano",piano,left,top);
             if(music<0)music=put("ballroom_piano",piano,right-3,top);
-            if(music<0){error="Palace ballroom cannot fit its piano beside the dance floor";return false;}
+            // The piano is optional: a ballroom without room for it is still a ballroom.
+            (void)music;
             put("ballroom_bench",bench,left,cy,1);put("ballroom_bench",bench,right-1,cy,1);
             put("ballroom_candelabrum",candle,left,top);put("ballroom_candelabrum",candle,right-1,top);
         }else if(role=="entrance_hall"||role=="great_hall"||role=="guard_hall"){
@@ -345,7 +359,7 @@ inline bool Decorate(MapPlan& plan,const MapGenParams& params,std::string& error
             for(int yy=top+8;yy<bottom-2;yy+=6){put("chapel_pew",bench,left,yy,2);put("chapel_pew",bench,right-3,yy,2);}
         }else if(role=="armory"||role.find("guard")!=std::string::npos){
             put("weapon_rack",sword,left,top);put("shield_rack",shield,right-2,top);put("armory_worktable",table,left,bottom-3);
-        }else if(role.find("store")!=std::string::npos||role=="pantry"||role=="treasury"||role=="strongroom"){
+        }else if(role.find("store")!=std::string::npos||role=="pantry"||role=="treasury"||role=="royal_treasury"||role=="strongroom"){
             put("storage_chest",chest,left,top);put("storage_barrel",barrel,right-2,top);put("storage_chest",chest,left,bottom-1);
         }else{
             for(int xx=left;xx<right-2;xx+=6)put("study_bookcase",shelf,xx,top);
