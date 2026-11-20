@@ -1733,8 +1733,8 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
     const int wallThickness = std::clamp(static_cast<int>(std::lround(GetParam("wallThickness", 2.0))), 1, 3);
     const int moatMin = std::clamp(static_cast<int>(std::lround(GetParam("moatWidthMin", 2.0))), 2, 5);
     const int moatMax = std::clamp(static_cast<int>(std::lround(GetParam("moatWidthMax", 5.0))), moatMin, 5);
-    const double extraEdgeRate = std::clamp(GetParam("roadExtraEdgeRate", 0.15), 0.0, 1.0);
-    int mainRoadWidth = std::clamp(static_cast<int>(std::lround(GetParam("mainRoadWidth", 3.0))), 1, 5);
+    // Width of the main avenue in cells; the avenue is exactly this wide.
+    int mainRoadWidth = std::clamp(static_cast<int>(std::lround(GetParam("mainRoadWidth", 3.0))), 1, castle_odds::kMaxMainRoadWidth);
     const bool mainRoadWidthWasExplicit = params_.extra.find("mainRoadWidth") != params_.extra.end();
 
     // Small maps cannot support the full large-castle density. Keep the
@@ -2196,8 +2196,10 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
             // natureSideCount: how many of the left / right / top sides get nature, decided
             // before the terrain fills them. -1 (default) draws 0..3; 0 leaves every side
             // plain, so the terrain has no effect. Water always keeps at least one side.
+            // The default draw follows castle_odds::kNatureSideCountWeights (15/40/30/15%).
             int count = static_cast<int>(std::lround(GetParam("natureSideCount", -1)));
-            const int drawnCount = std::uniform_int_distribution<int>(0, 3)(rng);
+            const int drawnCount = castle_odds::PickByWeight(castle_odds::kNatureSideCountWeights,
+                std::uniform_int_distribution<int>(0, 99)(rng));
             if (count < 0) count = drawnCount;
             count = std::min(count, 3);
             if (natureBiome == RIVER) count = std::max(count, 1);
@@ -3363,14 +3365,6 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
         }
         failureStage = "connecting castle facilities and towers";
         if (connectedCount < static_cast<int>(nodes.size())) continue;
-        std::vector<std::pair<int, int>> extraEdges;
-        for (int a = 0; a < static_cast<int>(nodes.size()); ++a) for (int b = a + 1; b < static_cast<int>(nodes.size()); ++b) extraEdges.push_back({a, b});
-        std::shuffle(extraEdges.begin(), extraEdges.end(), rng);
-        const int extraCount = static_cast<int>(std::lround(nodes.size() * extraEdgeRate));
-        for (int i = 0; i < extraCount && i < static_cast<int>(extraEdges.size()); ++i) {
-            const auto [a, b] = extraEdges[static_cast<std::size_t>(i)];
-            connectNodes(a, b, 0);
-        }
         if (!straightAvenue) {
             for (const Gate& gate : gates) for (const Point& point : gate.bridge) biomes[static_cast<std::size_t>(Index(point.x, point.y, width))] = BRIDGE;
         }
@@ -3683,9 +3677,11 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
                 avenueClear = structure[index] == 0;
             }
             if (!avenueClear) continue;
-            const int avenueHalfWidth = (mainRoadWidth - 1) / 2;
+            // An even width puts the extra cell on the east side so the avenue is exactly mainRoadWidth wide.
+            const int avenueOffsetMin = -((mainRoadWidth - 1) / 2);
+            const int avenueOffsetMax = avenueOffsetMin + mainRoadWidth - 1;
             for (int y = keepDoor.y + 1; y < height; ++y) {
-                for (int offset = -avenueHalfWidth; offset <= avenueHalfWidth; ++offset) {
+                for (int offset = avenueOffsetMin; offset <= avenueOffsetMax; ++offset) {
                     const int x = keepDoor.x + offset;
                     if (!InBounds(x, y, width, height)) continue;
                     const std::size_t index = static_cast<std::size_t>(Index(x, y, width));
@@ -3942,7 +3938,7 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
         std::mt19937 lotRng(CandidateSeed(params_.seed, 9100));
         // (lotFacilities=0 leaves the open ground bare: the tests of the keep and the walls check them without the facilities.)
         const auto lotSwitch = params_.extra.find("lotFacilities");
-        if (lotSwitch == params_.extra.end() || lotSwitch->second != 0) castle_lot::PlaceFacilities(outPlan, static_cast<int>(mode), lotRng, desert);
+        if (lotSwitch == params_.extra.end() || lotSwitch->second != 0) castle_lot::PlaceFacilities(outPlan, static_cast<int>(mode), lotRng, desert, params_);
     }
     // Grade the dry banks beside the water the way a village does: low, gentle
     // banks, and nothing is cut near a building or road.

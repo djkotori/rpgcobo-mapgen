@@ -32,6 +32,13 @@ MapPlan Make(int size, int mode, unsigned seed) {
     params.width = params.depth = size;
     params.seed = seed;
     params.extra = {{"castleMode", mode}, {"assetFoundation", 1}, {"exteriorTerrain", 0}, {"natureSideCount", 0}};
+    // The sizes of the registered assets as the editor passes them (the trees are big: 6 across).
+    params.extra.insert({{"settlementProp_conifer_width", 6}, {"settlementProp_conifer_depth", 5}, {"settlementProp_shade_tree_width", 6}, {"settlementProp_shade_tree_depth", 6},
+        {"settlementProp_palm_width", 5}, {"settlementProp_palm_depth", 4}, {"settlementProp_shrub_width", 4}, {"settlementProp_shrub_depth", 4},
+        {"settlementProp_rock_width", 2}, {"settlementProp_rock_depth", 2},
+        {"civicObject2_1Width", 3}, {"civicObject2_1Depth", 3}, {"civicObject2_1Height", 6},
+        {"civicObject3_14Width", 4}, {"civicObject3_14Depth", 4}, {"civicObject3_14Height", 6},
+        {"civicObject3_26Width", 4}, {"civicObject3_26Depth", 4}, {"civicObject3_26Height", 5}});
     CastleMapImageGenerator generator(params);
     MapPlan plan;
     std::string error;
@@ -46,7 +53,7 @@ const castle_lot::FacilitySpec* SpecOf(const std::string& role) {
 }
 
 struct Tally {
-    int castles = 0, courtyard = 0, outdoor = 0, annex = 0, mismatch = 0, roads = 0, grass = 0, forest = 0, jails = 0, twoRoom = 0, rowhouses = 0;
+    int castles = 0, courtyard = 0, outdoor = 0, annex = 0, mismatch = 0, roads = 0, grass = 0, forest = 0, jails = 0, twoRoom = 0, rowhouses = 0, castleDoors = 0, fixtures = 0, props = 0, flowers = 0, crops = 0, archery = 0, chairPairs = 0, lamps = 0, stacks = 0, tops = 0, statues = 0, wells = 0, treedGardens = 0, gardens = 0;
     std::map<std::string, int> byRole;
 };
 
@@ -99,8 +106,10 @@ void Check(const MapPlan& plan, int mode, const std::string& context, Tally& tal
         Require(spec != nullptr, context + ": unknown facility role " + o.role);
         Require(spec->annex == (o.kind == "lot_annex"), context + ": " + o.role + " has the wrong region kind");
         const int w = o.x1 - o.x0 + 1, h = o.y1 - o.y0 + 1;
-        Require((w >= spec->minWidth && h >= spec->minHeight) || (w >= spec->minHeight && h >= spec->minWidth),
-            context + ": " + o.role + " is smaller than its catalog size (" + std::to_string(w) + "x" + std::to_string(h) + ")");
+        // (a courtyard facility fills whatever the courtyard is, so it has no catalog minimum)
+        if (o.parentId < 0)
+            Require((w >= spec->minWidth && h >= spec->minHeight) || (w >= spec->minHeight && h >= spec->minWidth),
+                context + ": " + o.role + " is smaller than its catalog size (" + std::to_string(w) + "x" + std::to_string(h) + ")");
         Require(o.x0 >= plan.width / 10 && o.y0 >= plan.depth / 10 && o.x1 <= plan.width - 1 - plan.width / 10 && o.y1 <= plan.depth - 1 - plan.depth / 10, context + ": " + o.role + " lies in the outer 10% of the image");
         Require(o.x0 >= ground->x0 && o.y0 >= ground->y0 && o.x1 <= ground->x1 && o.y1 <= ground->y1, context + ": " + o.role + " lies outside the castle ground");
         ++(spec->annex ? tally.annex : tally.outdoor);
@@ -134,7 +143,7 @@ void Check(const MapPlan& plan, int mode, const std::string& context, Tally& tal
             // (A courtyard facility fills the whole courtyard, which is not a rectangle: only its bounding box is the region.)
             if (!courtyard)
             for (int y = o.y0; y <= o.y1; ++y) for (int x = o.x0; x <= o.x1; ++x)
-                Require(biome(x, y) == spec->ground || biome(x, y) == PLAIN, context + ": " + o.role + " has a foreign ground (biome " + std::to_string(biome(x, y)) + ")");
+                Require(biome(x, y) == spec->ground || biome(x, y) == PLAIN || (o.role == "yard_archery_range" && (biome(x, y) == TOWN_PAVEMENT || biome(x, y) == DESERT)), context + ": " + o.role + " has a foreign ground (biome " + std::to_string(biome(x, y)) + ")");
             continue;
         }
         // An annex: a wall all round (but its door), a stone floor inside, rooms, a door that can be walked to.
@@ -192,9 +201,166 @@ void Check(const MapPlan& plan, int mode, const std::string& context, Tally& tal
     // One facility to a lot, and a role at most twice in a castle.
     {
         std::map<std::string, int> counts;
-        for (const auto* o : outlines) Require(++counts[o->role] <= 2, context + ": " + o->role + " appears more than twice");
+        for (const auto* o : outlines) if (o->parentId < 0) Require(++counts[o->role] <= 2, context + ": " + o->role + " appears more than twice");
     }
     for (const std::string& role : seen) ++tally.byRole[role];
+    // Layout rules: an archery range has its targets (shields) north of its benches and a firing line; a table's chairs face it
+    // (one rotated half a turn); a paddock's gate is on the south.
+    {
+        for (const auto* o : outlines) {
+            if (o->kind != "lot_facility" || o->role != "yard_archery_range") continue;
+            int targetsY = 1 << 30, benchesY = -1, stone = 0;
+            for (const auto& r : plan.regions) {
+                if (r.id < 90000 || r.kind != "castle_fixture" || r.x0 < o->x0 || r.x1 > o->x1 || r.y0 < o->y0 || r.y1 > o->y1) continue;
+                if (r.role == "shield") targetsY = std::min(targetsY, r.y0);
+                if (r.role == "bench") benchesY = std::max(benchesY, r.y1);
+            }
+            for (int y = o->y0; y <= o->y1; ++y) for (int x = o->x0; x <= o->x1; ++x) stone += biome(x, y) == TOWN_PAVEMENT;
+            Require(benchesY < 0, context + ": an archery range has a bench");
+            // (a range too small for its pattern has a single piece in the middle, and no line)
+            if (targetsY < (1 << 30)) { Require(stone > 0, context + ": an archery range has no firing line"); ++tally.archery; }
+        }
+        for (const auto* room : rooms) {
+            std::vector<const MapPlanRegion*> chairs;
+            for (const auto& r : plan.regions) if (r.id >= 90000 && r.kind == "castle_fixture" && r.role == "chair" && r.parentId == room->id) chairs.push_back(&r);
+            if (chairs.size() >= 2) {
+                Require(chairs[0]->rotation != chairs[1]->rotation, context + ": the chairs of a table face the same way");
+                ++tally.chairPairs;
+            }
+        }
+    }
+    // Stacked barrels (castle_detail): a barrel on a barrel, over the seam between two below; a third tier stands on a second.
+    for (const auto& r : plan.regions) {
+        if (r.kind != "castle_detail" || r.id < 90000 || r.role != "barrel") continue;
+        Require(r.parentIndex >= 0 && r.parentIndex < static_cast<int>(plan.regions.size()), context + ": a stacked barrel has no base");
+        const MapPlanRegion& base = plan.regions[static_cast<std::size_t>(r.parentIndex)];
+        Require(base.role == "barrel" && (base.kind == "castle_fixture" || base.kind == "castle_detail"), context + ": a stacked barrel stands on something else than a barrel");
+        Require(!(r.x1 < base.x0 || base.x1 < r.x0 || r.y1 < base.y0 || base.y1 < r.y0), context + ": a stacked barrel is not over its base");
+        ++tally.stacks;
+        tally.tops += base.kind == "castle_detail";
+    }
+    // At most one well yard on a map, and no Well asset indoors (a well house is a room with buckets and barrels).
+    {
+        int wellYards = 0;
+        for (const auto* o : outlines) wellYards += o->kind == "lot_facility" && o->role == "yard_well";
+        Require(wellYards <= 1, context + ": more than one well yard");
+        for (const auto& r : plan.regions) Require(!(r.kind == "settlement_facility" && r.role == "well" && r.parentId >= 0 && plan.regions[static_cast<std::size_t>(r.parentIndex)].kind != "lot_facility"), context + ": a well stands in a room");
+    }
+    // The outdoor facilities: no smithy (its ground was the castle's floor), no shelf or chest outdoors, the registered Well, lamps in
+    // the gardens, statues among the graves; a garden has its trees; a jail cell is always fitted the same way; and only the throne
+    // room's front door is a royal door.
+    {
+        for (const auto* o : outlines) {
+            Require(o->role != "yard_smithy", context + ": a smithy yard was generated");
+            if (o->kind != "lot_facility") continue;
+            int trees = 0;
+            for (const auto& r : plan.regions) {
+                if (r.id < 90000 || r.x0 < o->x0 || r.x1 > o->x1 || r.y0 < o->y0 || r.y1 > o->y1) continue;
+                Require(!(r.kind == "castle_fixture" && (r.role == "chest" || r.role == "shelf")), context + ": a " + r.role + " stands outdoors in " + o->role);
+                if (r.kind == "settlement_prop" && (r.role == "shade_tree" || r.role == "conifer" || r.role == "palm")) ++trees;
+                if (r.kind == "settlement_facility") {
+                    if (r.role == "street_lamp") { Require(o->role == "yard_garden_grass" || o->role == "yard_garden_forest" || o->role == "yard_well", context + ": a lamp outside the gardens and the well yard"); ++tally.lamps; }
+                    if (r.role == "statue") { Require(o->role == "yard_graveyard", context + ": a statue outside the graveyard"); ++tally.statues; }
+                    if (r.role == "well") { Require(o->role == "yard_well", context + ": a well outside the well yard"); ++tally.wells; }
+                }
+            }
+            // (the grass garden has flower beds and no trees; the forest garden is the one that must have its trees)
+            if (o->role == "yard_garden_grass") Require(trees == 0 || (o->x1 - o->x0 + 1 < 14 || o->y1 - o->y0 + 1 < 14), context + ": a grass garden with flower beds has trees");
+            if (o->role == "yard_garden_forest") { ++tally.gardens; tally.treedGardens += trees > 0; }
+        }
+        for (const auto* room : rooms) {
+            if (room->role == "annex_jail_cell") {
+                const MapPlanRegion* bed = nullptr; const MapPlanRegion* bucket = nullptr;
+                for (const auto& r : plan.regions) {
+                    if (r.id < 90000 || r.kind != "castle_fixture" || r.parentId != room->id) continue;
+                    if (r.role == "bed") bed = &r;
+                    if (r.role == "water_bucket") bucket = &r;
+                }
+                if (bed != nullptr) Require(bed->x0 == room->x0 && bed->y0 == room->y0, context + ": the bed of a jail cell is not at the back left");
+                if (bucket != nullptr) Require(bucket->x1 == room->x1 && bucket->y0 == room->y0, context + ": the bucket of a jail cell is not at the back right");
+            }
+        }
+        for (const auto& d : plan.regions) {
+            if (d.kind != "castle_door" || d.id >= 80000) continue;
+            for (const auto* room : rooms) {
+                if (room->role != "throne_room" || (room->id != d.parentId && room->id != d.linkedRegionId)) continue;
+                const bool front = d.rotation % 2 == 0 && d.y0 >= room->y1;
+                Require((d.role == "ceremonial_door") == front, context + ": a door of the throne room is royal, or not, against the rule (" + d.role + ")");
+            }
+        }
+    }
+    // Doors like the keep's: every annex door (exterior and between rooms) is a castle_door 4 wide with two stone jambs.
+    {
+        std::vector<const MapPlanRegion*> castleDoors;
+        for (const auto& r : plan.regions) if (r.kind == "castle_door" && r.id >= 80000) castleDoors.push_back(&r);
+        for (const auto* d : castleDoors) {
+            const int span = std::max(d->x1 - d->x0, d->y1 - d->y0) + 1, thick = std::min(d->x1 - d->x0, d->y1 - d->y0) + 1;
+            Require(span == 4 && thick == 1, context + ": an annex door is not 4 wide");
+            int jambs = 0;
+            for (const auto& r : plan.regions) jambs += r.kind == "castle_portal" && r.parentId == d->id;
+            Require(jambs == 2, context + ": an annex door has " + std::to_string(jambs) + " jambs");
+            ++tally.castleDoors;
+        }
+        // One door region per exterior door and per doorway between rooms of an annex.
+        int expected = 0;
+        for (const auto& r : plan.regions) expected += r.kind == "lot_annex_door";
+        for (const auto* o : outlines) if (o->kind == "lot_annex")
+            for (const auto& r : plan.regions) expected += r.kind == "room_connection" && r.x0 > o->x0 && r.x1 < o->x1 && r.y0 > o->y0 && r.y1 < o->y1;
+        Require(static_cast<int>(castleDoors.size()) == expected, context + ": annex doors and castle_door regions differ (" + std::to_string(castleDoors.size()) + " vs " + std::to_string(expected) + ")");
+        // Furniture of the lots (castle_fixture with an id from 90000): on its own ground, apart from the others and from the doors.
+        std::vector<const MapPlanRegion*> fixtures;
+        for (const auto& r : plan.regions) if (r.kind == "castle_fixture" && r.id >= 90000) fixtures.push_back(&r);
+        for (std::size_t i = 0; i < fixtures.size(); ++i) {
+            const MapPlanRegion& f = *fixtures[i];
+            Require(f.parentIndex >= 0 && f.parentIndex < static_cast<int>(plan.regions.size()) && plan.regions[static_cast<std::size_t>(f.parentIndex)].id == f.parentId,
+                context + ": a fixture of " + f.role + " has no parent");
+            const MapPlanRegion& parent = plan.regions[static_cast<std::size_t>(f.parentIndex)];
+            Require(f.x0 >= parent.x0 && f.x1 <= parent.x1 && f.y0 >= parent.y0 && f.y1 <= parent.y1, context + ": a " + f.role + " lies outside its " + parent.role);
+            if (parent.kind == "room")
+                for (int y = f.y0; y <= f.y1; ++y) for (int x = f.x0; x <= f.x1; ++x)
+                    Require(biome(x, y) == TOWN_STONE_FLOOR, context + ": a " + f.role + " stands off the floor of " + parent.role);
+            for (std::size_t j = i + 1; j < fixtures.size(); ++j) {
+                const MapPlanRegion& g = *fixtures[j];
+                Require(f.x1 < g.x0 || g.x1 < f.x0 || f.y1 < g.y0 || g.y1 < f.y0, context + ": " + f.role + " and " + g.role + " overlap");
+            }
+            for (const auto* d : castleDoors)
+                Require(f.x1 < d->x0 - 3 || f.x0 > d->x1 + 3 || f.y1 < d->y0 - 3 || f.y0 > d->y1 + 3, context + ": a " + f.role + " blocks a door landing");
+            ++tally.fixtures;
+        }
+    }
+    // Planting and crops of the outdoor facilities (settlement_prop / flower / plant / crop with an id from 90000): inside a facility,
+    // on its ground, and clear of the solid things (furniture and props), which keep apart from each other.
+    {
+        std::vector<const MapPlanRegion*> solids, lights;
+        for (const auto& r : plan.regions) {
+            if (r.id < 90000) continue;
+            if (r.kind == "settlement_prop" || r.kind == "castle_fixture" || r.kind == "settlement_facility") solids.push_back(&r);
+            if (r.kind == "settlement_flower" || r.kind == "settlement_plant" || r.kind == "settlement_crop") lights.push_back(&r);
+        }
+        const auto overlap = [](const MapPlanRegion& a, const MapPlanRegion& b) { return !(a.x1 < b.x0 || b.x1 < a.x0 || a.y1 < b.y0 || b.y1 < a.y0); };
+        for (const auto* r : solids) {
+            if (r->kind != "settlement_prop") continue;
+            ++tally.props;
+            // The editor places a prop unturned and skips one whose size differs from the registered asset's: the sizes must match exactly.
+            {
+                const std::map<std::string, std::pair<int, int>> sizes = {{"conifer", {6, 5}}, {"shade_tree", {6, 6}}, {"palm", {5, 4}}, {"shrub", {4, 4}}, {"rock", {2, 2}}};
+                const auto it = sizes.find(r->role);
+                if (it != sizes.end()) Require(r->x1 - r->x0 + 1 == it->second.first && r->y1 - r->y0 + 1 == it->second.second, context + ": a " + r->role + " has a size the editor would not place");
+            }
+            const MapPlanRegion* home = nullptr;
+            for (const auto* o : outlines) if (o->kind == "lot_facility" && r->x0 >= o->x0 && r->x1 <= o->x1 && r->y0 >= o->y0 && r->y1 <= o->y1) home = o;
+            Require(home != nullptr, context + ": a " + r->role + " lies outside every facility");
+        }
+        for (std::size_t i = 0; i < solids.size(); ++i) for (std::size_t j = i + 1; j < solids.size(); ++j)
+            Require(!overlap(*solids[i], *solids[j]), context + ": " + solids[i]->role + " and " + solids[j]->role + " overlap");
+        for (const auto* l : lights) {
+            const MapPlanRegion* home = nullptr;
+            for (const auto* o : outlines) if (o->kind == "lot_facility" && l->x0 >= o->x0 && l->x1 <= o->x1 && l->y0 >= o->y0 && l->y1 <= o->y1) home = o;
+            Require(home != nullptr, context + ": a " + l->role + " lies outside every facility");
+            for (const auto* sd : solids) Require(!overlap(*l, *sd), context + ": a " + l->role + " lies under a " + sd->role);
+            ++(l->kind == "settlement_crop" ? tally.crops : tally.flowers);
+        }
+    }
     for (const auto* r : roads) {
         ++tally.roads;
         const int w = r->x1 - r->x0 + 1, h = r->y1 - r->y0 + 1;
@@ -221,14 +387,20 @@ int main() {
             Check(Make(size, mode, seed), mode, context, all);
         }
         std::cout << "  castles=" << all.castles << " outdoor=" << all.outdoor << " annex=" << all.annex << " mismatch=" << all.mismatch
-                  << " courtyard=" << all.courtyard << " roads=" << all.roads << " grass gardens=" << all.grass << " forest gardens=" << all.forest << " jails=" << all.jails << " row houses=" << all.rowhouses << '\n';
+                  << " courtyard=" << all.courtyard << " roads=" << all.roads << " grass gardens=" << all.grass << " forest gardens=" << all.forest << " jails=" << all.jails << " row houses=" << all.rowhouses << " doors=" << all.castleDoors << " fixtures=" << all.fixtures << " props=" << all.props << " flowers=" << all.flowers << " crops=" << all.crops << " archery=" << all.archery << " chair pairs=" << all.chairPairs << " stacks=" << all.stacks << " tops=" << all.tops << " lamps=" << all.lamps << " statues=" << all.statues << " wells=" << all.wells << " treed gardens=" << all.treedGardens << "/" << all.gardens << '\n';
         for (const auto& [role, count] : all.byRole) std::cout << "    " << role << " " << count << '\n';
         if (!QuickMode()) {
             Require(all.outdoor > 0 && all.annex > 0, "no outdoor facility or no annex was generated");
             Require(all.grass > 0 && all.forest > 0, "one of the two gardens never appears");
             Require(all.jails > 0 && all.twoRoom > 0, "no jail, or no two-room annex");
             Require(all.rowhouses > 0, "no row house was generated");
+            Require(all.castleDoors > 0 && all.fixtures > 0, "no annex door or no lot furniture was generated");
+            Require(all.chairPairs > 0, "no table with a pair of chairs was generated");
+            Require(all.props > 0 && all.flowers > 0 && all.crops > 0, "no tree or shrub, no flower, or no crop was planted");
             Require(all.courtyard > 0, "no courtyard facility was generated");
+            Require(all.lamps > 0 && all.statues > 0 && all.wells > 0, "no lamp, no statue or no well was placed");
+            Require(all.stacks > 0, "no barrel was ever stacked");
+            Require(all.treedGardens * 100 >= all.gardens * 85, "too many gardens have no tree");
             Require(all.roads > 0, "no annex road was ever drawn");
             // A facility that does not suit the castle type is a quarter as likely: they are a minority.
             Require(all.mismatch * 100 <= (all.outdoor + all.annex) * 30, "too many facilities do not suit their castle type");

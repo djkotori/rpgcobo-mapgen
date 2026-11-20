@@ -17,6 +17,11 @@ inline constexpr double kModeWeightHill = 0.15;
 inline constexpr double kModeWeightRiver = 0.15;
 inline constexpr double kModeWeightPalace = 0.15;
 inline constexpr double kModeWeightFortress = 0.25;
+// 自然のある辺の数（natureSideCount 指定がないとき）。添字が辺の数（0〜3）。左・右・上の辺のうちいくつに自然を置くか。重みの合計は 100。
+// 水（川）は最低 1 辺を確保するので、0 を引いても 1 辺になる。
+inline constexpr std::array<int, 4> kNatureSideCountWeights = {15, 40, 30, 15};
+// 大通りの幅（mainRoadWidth、マス）の上限。指定した幅のとおりの幅で引く（偶数も指定どおり）。
+inline constexpr int kMaxMainRoadWidth = 20;
 // 豊かさは一様分布。
 inline constexpr double kWealthMin = 0.7;
 inline constexpr double kWealthMax = 2.5;
@@ -178,7 +183,8 @@ constexpr int Sum(const std::array<int, kSuitePatternCount>& values) {
     return total;
 }
 static_assert(Sum(kSuiteWeights) == 100, "the suite weights must add up to 100");
-static_assert(kThroneShapeSideRoomsPercent + kThroneShapeShiftedPercent + kThroneShapeFullWidthPercent == 100, "throne shape weights");
+static_assert(kNatureSideCountWeights[0] + kNatureSideCountWeights[1] + kNatureSideCountWeights[2] + kNatureSideCountWeights[3] == 100, "nature side count weights");
+static_assert(kThroneShapeSideRoomsPercent +kThroneShapeShiftedPercent + kThroneShapeFullWidthPercent == 100, "throne shape weights");
 static_assert(kBackBigRoomPercent + kBackCorridorCellsPercent + kBackOpenGroundPercent == 100, "back form weights");
 static_assert(kSidePiecesOnePercent + kSidePiecesTwoPercent + kSidePiecesThreePercent == 100, "side piece weights");
 static_assert(kModeWeightConcentric + kModeWeightHill + kModeWeightRiver + kModeWeightPalace + kModeWeightFortress > 0.999 &&

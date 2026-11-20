@@ -128,6 +128,12 @@ if(BUILD_TESTING)
         target_compile_options(castle_variety_tests PRIVATE /Ob0)
     endif()
     add_test(NAME castle_variety COMMAND castle_variety_tests)
+    add_executable(castle_nature_odds_tests ../tests/CastleNatureOddsTests.cpp CastleMapImageGenerator.cpp TownPaving.cpp MapQuality.cpp)
+    target_include_directories(castle_nature_odds_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME castle_nature_odds COMMAND castle_nature_odds_tests)
+    add_executable(castle_road_width_tests ../tests/CastleRoadWidthTests.cpp CastleMapImageGenerator.cpp TownPaving.cpp MapQuality.cpp)
+    target_include_directories(castle_road_width_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME castle_road_width COMMAND castle_road_width_tests)
     add_executable(quality_policy_tests ../tests/QualityPolicyTests.cpp MapQuality.cpp)
     target_include_directories(quality_policy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME quality_policy COMMAND quality_policy_tests)
@@ -143,12 +149,12 @@ if(BUILD_TESTING)
     set_tests_properties(
         castle_variety castle_service_door castle_layout castle_terrain_biome
         castle_axis_variety castle_nature_width castle_corner_smooth castle_wall_thickness
-        castle_corridor castle_window_corridor castle_lot_facility castle_margin castle_outline_variety castle_cli_interior_only
+        castle_corridor castle_window_corridor castle_lot_facility castle_margin castle_outline_variety castle_cli_interior_only castle_nature_odds
         settlement_sites
         PROPERTIES LABELS slow)
 
     # 割合・出現頻度・種類数を数える統計的なテストには "statistical" ラベルを付ける。反復数を減らすと合否が変わるため、
     # クイックモードで縮めず、日常用（`ctest -LE statistical`）では実行しない。コミット前のフルテストで実行する。
-    set_property(TEST castle_corridor castle_window_corridor castle_lot_facility castle_room_shape castle_axis_variety castle_outline_variety world_biomes
+    set_property(TEST castle_corridor castle_window_corridor castle_lot_facility castle_room_shape castle_axis_variety castle_outline_variety world_biomes castle_nature_odds
         APPEND PROPERTY LABELS statistical)
 endif()

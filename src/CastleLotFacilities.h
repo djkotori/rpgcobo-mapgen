@@ -37,10 +37,10 @@ inline constexpr int kCourtyardNothingPercent = 5;
 // 相性が × の施設の発生率の倍率（○ は 1.0）。
 inline constexpr double kMismatchWeight = 0.25;
 
-// 施設の一覧（屋外 10 件 + はなれ 9 件）。順序は仕様の表のとおり。
+// 施設の一覧（屋外 9 件 + はなれ 9 件）。順序は仕様の表のとおり。
 // 寸法は人間の大きさ（2×2 マス）に合わせ、当初の案の 2 倍にしてある。
-inline const std::array<FacilitySpec, 19>& Catalog() {
-    static const std::array<FacilitySpec, 19> kCatalog = {{
+inline const std::array<FacilitySpec, 18>& Catalog() {
+    static const std::array<FacilitySpec, 18> kCatalog = {{
         // 屋外（annex = false, rooms = 0）
         // role,                 annex, minW, minH, ground,                                  rooms, fits{同心円, 丘, 川, 宮殿, 要塞}
         {"yard_cargo",           false,   16,    16, static_cast<std::uint8_t>(TOWN_PAVEMENT),     0, {true,  true,  true,  false, true}},
@@ -49,7 +49,6 @@ inline const std::array<FacilitySpec, 19>& Catalog() {
         {"yard_well",            false,   12,    12, static_cast<std::uint8_t>(TOWN_PAVEMENT),     0, {true,  true,  true,  true,  true}},
         {"yard_graveyard",       false,   16,    16, static_cast<std::uint8_t>(PLAIN),             0, {true,  true,  false, false, true}},
         {"yard_herb_garden",     false,   16,    16, static_cast<std::uint8_t>(PLAIN),             0, {true,  true,  false, true,  false}},
-        {"yard_smithy",          false,   16,    16, static_cast<std::uint8_t>(TOWN_STONE_FLOOR),  0, {true,  true,  true,  false, true}},
         {"yard_drill_ground",    false,  40,   32, static_cast<std::uint8_t>(DESERT),             0, {true,  false, false, false, true}},
         {"yard_paddock",         false,  48,   24, static_cast<std::uint8_t>(DESERT),             0, {true,  false, true,  true,  false}},
         {"yard_archery_range",   false,  40,    16, static_cast<std::uint8_t>(PLAIN),             0, {true,  true,  false, false, true}},

@@ -265,7 +265,7 @@ void TestInteriorOnlyMatrix() {
 }
 
 // The map editor always sends the exterior-oriented sliders (facility count and density,
-// road width, extra road connections, paving, tower and gate counts). A castle has no
+// road width, paving, tower and gate counts). A castle has no
 // castle town, so none of them may bring detached buildings, courts or paving back.
 void TestEditorSlidersDoNotBuildATown() {
     for (const int size : {128, 160}) for (int mode = 0; mode < 5; ++mode) for (unsigned seed : {12345U, 7U}) {
@@ -273,7 +273,7 @@ void TestEditorSlidersDoNotBuildATown() {
         params.width = params.depth = size;
         params.seed = seed;
         params.extra = {{"castleMode", mode}, {"assetFoundation", 1}, {"lotFacilities", 0}, {"wallHeight", 6}, {"outerFacilityCountMin", 6},
-            {"outerFacilityCountMax", 16}, {"outerFacilityDensity", 3}, {"mainRoadWidth", 5}, {"roadExtraEdgeRate", 0.55},
+            {"outerFacilityCountMax", 16}, {"outerFacilityDensity", 3}, {"mainRoadWidth", 12},
             {"pavingRatio", 0.85}, {"outerWallDefenseStrength", 2}, {"towerCountMin", 4}, {"towerCountMax", 6},
             {"gateCountMin", 2}, {"gateCountMax", 3}, {"moatWidthMin", 2}, {"moatWidthMax", 5}, {"candidateCount", 6},
             {"wealth", seed == 7U ? 2.5 : 1.0}};
