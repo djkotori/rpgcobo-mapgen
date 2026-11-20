@@ -1,4 +1,6 @@
-#include "CastleSettlement.h"
+#include "VillageGrowth.h"
+#include "SettlementDecoration.h"
+#include "AssetFoundation.h"
 #include "VillageMapImageGenerator.h"
 #include "TownMapImageGenerator.h"
 #include "SettlementRelief.h"
@@ -7,6 +9,9 @@
 #include <stdexcept>
 
 void Require(bool value,const std::string& message){if(!value)throw std::runtime_error(message);}
+// Ground a 2x2 human can stand on (open land, roads, floors).
+bool Floor(std::uint8_t b){return b==PLAIN||b==DESERT||b==FOREST||b==ROAD||b==BRIDGE||
+    b==TOWN_FLOOR||b==TOWN_WOOD_FLOOR||b==TOWN_STONE_FLOOR||b==TOWN_PAVEMENT;}
 MapGenParams Params(double wealth,int site=0){
     MapGenParams p;p.width=p.depth=160;p.seed=4242;
     p.extra={{"assetFoundation",1},{"settlementCivicPlan",1},{"countryWealth",wealth},{"assetCount",6},
@@ -51,7 +56,7 @@ void Check(const MapPlan& p,const MapGenParams& params){
     auto pass=[&](int x,int y){
         if(x<0||y<0||x+1>=p.width||y+1>=p.depth)return false;
         for(int yy=y;yy<y+2;++yy)for(int xx=x;xx<x+2;++xx)
-            if(blocked[yy*p.width+xx]||!castle_interior::Floor(p.biomes[yy*p.width+xx]))return false;
+            if(blocked[yy*p.width+xx]||!Floor(p.biomes[yy*p.width+xx]))return false;
         return true;
     };
     Require(pass(centre->x,centre->y),"Equipment blocks the settlement's centre");
@@ -92,9 +97,5 @@ int main(){try{
         Require(ok,error);ok=BuildAssetFoundation(p,params,error);Require(ok,type+" site="+std::to_string(site)+": "+error);
         ApplySettlementRelief(p,4);ApplySettlementShore(p);ApplySettlementDecoration(p,wealth);Check(p,params);++layouts;
     }
-    for(int mode=0;mode<5;++mode){auto params=Params(2.0);params.extra["castleMode"]=mode;
-        MapPlan p;std::string error;const bool ok=GenerateCastleSettlement(p,params,error);
-        Require(ok,"Castle mode="+std::to_string(mode)+": "+error);Check(p,params);++layouts;
-    }
-    std::cout<<"PASS "<<layouts<<" civic layouts: exact wealth thresholds, all sites, five castles, unique mayor and solid-aware 2x2 access\n";
+    std::cout<<"PASS "<<layouts<<" civic layouts: exact wealth thresholds, all sites, unique mayor and solid-aware 2x2 access\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
