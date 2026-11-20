@@ -465,6 +465,33 @@ std::string SpecialRoomRole(CastleMode mode, int draw) {
     }
 }
 
+// A castle has at most one chapel (shrines count). The largest one stays; every other becomes a room of a type that suits the castle.
+void LimitChapels(MapPlan& plan) {
+    const auto isChapel = [](const std::string& role) { return role.find("chapel") != std::string::npos || role.find("shrine") != std::string::npos; };
+    int keep = -1;
+    long best = -1;
+    for (int i = 0; i < static_cast<int>(plan.regions.size()); ++i) {
+        const MapPlanRegion& r = plan.regions[static_cast<std::size_t>(i)];
+        if (r.kind != "room" || !isChapel(r.role)) continue;
+        const long area = static_cast<long>(r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1);
+        if (area > best) { best = area; keep = i; }
+    }
+    if (keep < 0) return;
+    const std::string replacement = plan.archetype == "hill" ? "map_room" : plan.archetype == "river" ? "chart_archive" :
+        plan.archetype == "palace" ? "library" : plan.archetype == "fortress" ? "war_archive" : "archive";
+    for (int i = 0; i < static_cast<int>(plan.regions.size()); ++i) {
+        MapPlanRegion& r = plan.regions[static_cast<std::size_t>(i)];
+        if (i == keep || r.kind != "room" || !isChapel(r.role)) continue;
+        const std::string old = r.role;
+        r.role = replacement;
+        for (MapPlanMarker& marker : plan.markers) {
+            if (marker.regionId != r.id && marker.id != r.id) continue;
+            if (marker.role == old) marker.role = replacement;
+            else if (marker.role == old + "_door") marker.role = replacement + "_door";
+        }
+    }
+}
+
 // Big rooms that can take the back of the axis when there is no throne room (or stand beside a
 // narrowed throne room), and small rooms that flank it.
 std::vector<std::string> BigRoomRoles(CastleMode mode) {
@@ -3906,6 +3933,7 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
     for (auto& entry : ranked) {
         std::string error;
         MapPlan trial = entry.plan;  // Decorate edits its plan even when it fails
+        LimitChapels(trial);
         if (castle_interior::Decorate(trial, params_, error)) {
             entry.plan = std::move(trial);
             best = std::move(entry);
@@ -3919,6 +3947,7 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
         // The castle keeps its doors: a layout that cannot be furnished is decorated with the doors only.
         {
             MapPlan doors = best.plan;
+            LimitChapels(doors);
             std::string doorError;
             if (castle_interior::Decorate(doors, params_, doorError, true)) best.plan = std::move(doors);
         }
@@ -3939,6 +3968,55 @@ bool CastleMapImageGenerator::GenerateOnce(MapPlan& outPlan, std::string& outErr
         // (lotFacilities=0 leaves the open ground bare: the tests of the keep and the walls check them without the facilities.)
         const auto lotSwitch = params_.extra.find("lotFacilities");
         if (lotSwitch == params_.extra.end() || lotSwitch->second != 0) castle_lot::PlaceFacilities(outPlan, static_cast<int>(mode), lotRng, desert, params_);
+    }
+    // Outside every service door: a half circle of sand 6 cells across (radius 3), centred on the opening and the same whichever way the
+    // door faces, where the ground is plain or forest; where the ground is already sand, a paved half circle instead (sand on sand would
+    // not show). Placed after the facilities, so that it can leave out a door that a road already leads on from.
+    {
+        constexpr int kRadius = 3;
+        const int planWidth = outPlan.width, planDepth = outPlan.depth;
+        for (const MapPlanRegion& door : std::vector<MapPlanRegion>(outPlan.regions)) {
+            if (door.kind != "castle_side_door") continue;
+            const MapPlanRegion* room = nullptr;
+            for (const MapPlanRegion& candidate : outPlan.regions) if (candidate.kind == "room" && candidate.id == door.parentId) { room = &candidate; break; }
+            if (room == nullptr) continue;
+            const bool vertical = door.rotation % 2 == 1;
+            const int out = vertical ? (door.x0 < (room->x0 + room->x1) / 2 ? -1 : 1) : (door.y0 < (room->y0 + room->y1) / 2 ? -1 : 1);
+            const int lateral0 = vertical ? door.y0 : door.x0;  // the 4 cells of the opening; its middle is between k=1 and k=2
+            const auto cellIndex = [&](int depth, int k) {
+                const int x = vertical ? door.x0 + out * depth : lateral0 + k, y = vertical ? lateral0 + k : door.y0 + out * depth;
+                return x < 0 || y < 0 || x >= planWidth || y >= planDepth ? -1 : y * planWidth + x;
+            };
+            // The cells of the half circle: row i out from the opening (depth 2 + i), column k across it.
+            std::vector<int> cells;
+            for (int i = 0; i < kRadius; ++i) for (int k = -kRadius; k <= 3 + kRadius; ++k) {
+                const double dx = k - 1.5, dy = i + 0.5;
+                if (dx * dx + dy * dy > kRadius * kRadius) continue;
+                const int index = cellIndex(2 + i, k);
+                if (index >= 0) cells.push_back(index);
+            }
+            // Where a road leads on from the door (or a yard or an annex stands in front of it) there is no patch.
+            bool taken = false;
+            int xa = planWidth, ya = planDepth, xb = -1, yb = -1;
+            for (const int index : cells) {
+                const int x = index % planWidth, y = index / planWidth;
+                xa = std::min(xa, x); xb = std::max(xb, x); ya = std::min(ya, y); yb = std::max(yb, y);
+                const auto biome = outPlan.biomes[static_cast<std::size_t>(index)];
+                if (biome == ROAD || biome == BRIDGE || biome == TOWN_PAVEMENT) taken = true;
+            }
+            for (const MapPlanRegion& lot : outPlan.regions)
+                if (!taken && lot.kind.rfind("lot_", 0) == 0 && lot.kind != "lot_annex_door" && lot.x0 <= xb && xa <= lot.x1 && lot.y0 <= yb && ya <= lot.y1) taken = true;
+            if (taken || cells.empty()) continue;
+            const int centre = cellIndex(2, 1);
+            if (centre < 0) continue;
+            const auto ground = outPlan.biomes[static_cast<std::size_t>(centre)];
+            const auto patch = (ground == PLAIN || ground == FOREST) ? DESERT : ground == DESERT ? TOWN_PAVEMENT : -1;
+            if (patch < 0) continue;
+            for (const int index : cells) {
+                auto& tile = outPlan.biomes[static_cast<std::size_t>(index)];
+                if (tile == PLAIN || tile == FOREST || tile == DESERT) tile = static_cast<std::remove_reference_t<decltype(tile)>>(patch);
+            }
+        }
     }
     // Grade the dry banks beside the water the way a village does: low, gentle
     // banks, and nothing is cut near a building or road.

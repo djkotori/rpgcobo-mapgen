@@ -53,7 +53,7 @@ const castle_lot::FacilitySpec* SpecOf(const std::string& role) {
 }
 
 struct Tally {
-    int castles = 0, courtyard = 0, outdoor = 0, annex = 0, mismatch = 0, roads = 0, grass = 0, forest = 0, jails = 0, twoRoom = 0, rowhouses = 0, castleDoors = 0, fixtures = 0, props = 0, flowers = 0, crops = 0, archery = 0, chairPairs = 0, lamps = 0, stacks = 0, tops = 0, statues = 0, wells = 0, treedGardens = 0, gardens = 0;
+    int castles = 0, courtyard = 0, outdoor = 0, annex = 0, mismatch = 0, roads = 0, grass = 0, forest = 0, jails = 0, twoRoom = 0, rowhouses = 0, castleDoors = 0, fixtures = 0, props = 0, flowers = 0, crops = 0, archery = 0, chairPairs = 0, lamps = 0, stacks = 0, tops = 0, statues = 0, wells = 0, treedGardens = 0, gardens = 0, facingLamps = 0;
     std::map<std::string, int> byRole;
 };
 
@@ -257,11 +257,29 @@ void Check(const MapPlan& plan, int mode, const std::string& context, Tally& tal
             for (const auto& r : plan.regions) {
                 if (r.id < 90000 || r.x0 < o->x0 || r.x1 > o->x1 || r.y0 < o->y0 || r.y1 > o->y1) continue;
                 Require(!(r.kind == "castle_fixture" && (r.role == "chest" || r.role == "shelf")), context + ": a " + r.role + " stands outdoors in " + o->role);
-                if (r.kind == "settlement_prop" && (r.role == "shade_tree" || r.role == "conifer" || r.role == "palm")) ++trees;
+                if (r.kind == "settlement_prop" && (r.role == "shade_tree" || r.role == "conifer" || r.role == "palm" || (o->role == "yard_garden_forest" && (r.role == "cactus" || r.role == "shrub")))) ++trees;
+                // A forest garden in the desert is planted with cacti and shrubs, not with a grid of palms.
+                Require(!(o->role == "yard_garden_forest" && r.kind == "settlement_prop" && r.role == "palm"), context + ": a forest garden holds a palm");
                 if (r.kind == "settlement_facility") {
                     if (r.role == "street_lamp") { Require(o->role == "yard_garden_grass" || o->role == "yard_garden_forest" || o->role == "yard_well", context + ": a lamp outside the gardens and the well yard"); ++tally.lamps; }
                     if (r.role == "statue") { Require(o->role == "yard_graveyard", context + ": a statue outside the graveyard"); ++tally.statues; }
                     if (r.role == "well") { Require(o->role == "yard_well", context + ": a well outside the well yard"); ++tally.wells; }
+                }
+            }
+            // The two lamps of a grass garden stand on either side of the path and face each other: the one on the + side of the main axis
+            // turns to the - side, the other the reverse (vertical axis: south 0 / north 2; horizontal axis: east 3 / west 1).
+            if (o->role == "yard_garden_grass") {
+                std::vector<const MapPlanRegion*> lamps;
+                for (const auto& r : plan.regions)
+                    if (r.id >= 90000 && r.kind == "settlement_facility" && r.role == "street_lamp" && r.x0 >= o->x0 && r.x1 <= o->x1 && r.y0 >= o->y0 && r.y1 <= o->y1) lamps.push_back(&r);
+                if (lamps.size() == 2) {
+                    const bool horizontal = lamps[0]->y0 == lamps[1]->y0;  // same row: the axis runs east-west
+                    const auto* lo = (horizontal ? lamps[0]->x0 < lamps[1]->x0 : lamps[0]->y0 < lamps[1]->y0) ? lamps[0] : lamps[1];
+                    const auto* hi = lo == lamps[0] ? lamps[1] : lamps[0];
+                    if (horizontal || lamps[0]->x0 == lamps[1]->x0) {
+                        Require(lo->rotation == (horizontal ? 3 : 0) && hi->rotation == (horizontal ? 1 : 2), context + ": the lamps of a grass garden do not face each other");
+                        ++tally.facingLamps;
+                    }
                 }
             }
             // (the grass garden has flower beds and no trees; the forest garden is the one that must have its trees)
@@ -399,6 +417,7 @@ int main() {
             Require(all.props > 0 && all.flowers > 0 && all.crops > 0, "no tree or shrub, no flower, or no crop was planted");
             Require(all.courtyard > 0, "no courtyard facility was generated");
             Require(all.lamps > 0 && all.statues > 0 && all.wells > 0, "no lamp, no statue or no well was placed");
+            Require(all.facingLamps > 0, "no grass garden had its two lamps checked for facing each other");
             Require(all.stacks > 0, "no barrel was ever stacked");
             Require(all.treedGardens * 100 >= all.gardens * 85, "too many gardens have no tree");
             Require(all.roads > 0, "no annex road was ever drawn");

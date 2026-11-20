@@ -176,7 +176,7 @@ std::pair<int, int> TestLots() {
             }
             if (!square) continue;
             ++lots;
-            // A side door opens onto the lot: the ground two cells out from the door is in it.
+            // A side door opens onto the lot: the ground out from the door, past the doorstep patch (up to 5 deep), is in it.
             bool door = false;
             for (const auto& d : plan.regions) {
                 if (d.kind != "castle_side_door") continue;
@@ -184,8 +184,10 @@ std::pair<int, int> TestLots() {
                 if (room == nullptr) continue;
                 int dx = 0, dy = 0;
                 if (d.rotation % 2) dx = d.x0 > room->x1 ? 1 : -1; else dy = d.y0 > room->y1 ? 1 : -1;
-                const int ax = (d.x0 + d.x1) / 2 + dx * 3, ay = (d.y0 + d.y1) / 2 + dy * 3;
-                if (ax >= 0 && ay >= 0 && ax < size && ay < size && label[static_cast<std::size_t>(ay * size + ax)] == piece) door = true;
+                for (int depth = 3; depth <= 8; ++depth) {
+                    const int ax = (d.x0 + d.x1) / 2 + dx * depth, ay = (d.y0 + d.y1) / 2 + dy * depth;
+                    if (ax >= 0 && ay >= 0 && ax < size && ay < size && label[static_cast<std::size_t>(ay * size + ax)] == piece) door = true;
+                }
             }
             served += door;
             int bx0 = size, by0 = size, bx1 = 0, by1 = 0;

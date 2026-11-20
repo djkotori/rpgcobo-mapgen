@@ -87,9 +87,17 @@ void CheckSideCount(int size, int mode, unsigned seed, int terrain, int sides) {
     Require(generator.Generate(plan, error), context + ": " + error);
     int natural = 0;
     for (const auto& r : plan.regions) natural += r.kind == "natural_terrain";
+    // (the doorstep outside a service door is a small patch of sand: it is not nature)
+    std::vector<std::uint8_t> doorstep(plan.biomes.size(), 0);
+    for (const auto& r : plan.regions) {
+        if (r.kind != "castle_side_door") continue;
+        for (int y = r.y0 - 8; y <= r.y1 + 8; ++y) for (int x = r.x0 - 8; x <= r.x1 + 8; ++x)
+            if (x >= 0 && y >= 0 && x < plan.width && y < plan.depth) doorstep[static_cast<std::size_t>(y * plan.width + x)] = 1;
+    }
     int desert = 0, cliff = 0, forest = 0;
-    for (const std::uint8_t b : plan.biomes) {
-        desert += b == DESERT;
+    for (std::size_t i = 0; i < plan.biomes.size(); ++i) {
+        const std::uint8_t b = plan.biomes[i];
+        desert += b == DESERT && !doorstep[i];
         cliff += b == TOWN_CLIFF;
         forest += b == FOREST;
     }

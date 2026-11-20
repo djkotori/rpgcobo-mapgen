@@ -100,6 +100,9 @@ if(BUILD_TESTING)
     add_executable(castle_lot_facility_tests ../tests/CastleLotFacilityTests.cpp CastleMapImageGenerator.cpp TownPaving.cpp MapQuality.cpp)
     target_include_directories(castle_lot_facility_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../tests)
     add_test(NAME castle_lot_facility COMMAND castle_lot_facility_tests)
+    add_executable(castle_room_style_tests ../tests/CastleRoomStyleTests.cpp CastleMapImageGenerator.cpp TownPaving.cpp MapQuality.cpp)
+    target_include_directories(castle_room_style_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../tests)
+    add_test(NAME castle_room_style COMMAND castle_room_style_tests)
     add_executable(castle_corner_smooth_tests ../tests/CastleCornerSmoothTests.cpp CastleMapImageGenerator.cpp TownPaving.cpp MapQuality.cpp)
     target_include_directories(castle_corner_smooth_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME castle_corner_smooth COMMAND castle_corner_smooth_tests)
@@ -149,7 +152,7 @@ if(BUILD_TESTING)
     set_tests_properties(
         castle_variety castle_service_door castle_layout castle_terrain_biome
         castle_axis_variety castle_nature_width castle_corner_smooth castle_wall_thickness
-        castle_corridor castle_window_corridor castle_lot_facility castle_margin castle_outline_variety castle_cli_interior_only castle_nature_odds
+        castle_corridor castle_window_corridor castle_lot_facility castle_room_style castle_margin castle_outline_variety castle_cli_interior_only castle_nature_odds
         settlement_sites
         PROPERTIES LABELS slow)
 

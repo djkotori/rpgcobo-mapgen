@@ -182,6 +182,12 @@ void TestInteriorOnlyMatrix() {
                 context + ": outdoor yard or side street region remains: " + region.kind);
             Require(region.kind != "garden" && region.kind != "park" && region.kind != "cistern",
                 context + ": castle-unrelated park or pond remains: " + region.kind);
+            // The doorstep outside a service door (a patch of sand, or paved on sand) belongs to the castle body, not to the avenue.
+            if (region.kind == "castle_side_door") {
+                for (int y = region.y0 - 8; y <= region.y1 + 8; ++y) for (int x = region.x0 - 8; x <= region.x1 + 8; ++x)
+                    if (x >= 0 && y >= 0 && x < size && y < size) body[static_cast<std::size_t>(y * size + x)] = 1;
+                continue;
+            }
             if (region.kind != "keep" && region.kind != "keep_expansion") continue;
             for (int y = region.y0 - 1; y <= region.y1 + 1; ++y) for (int x = region.x0 - 1; x <= region.x1 + 1; ++x)
                 if (x >= 0 && y >= 0 && x < size && y < size) body[static_cast<std::size_t>(y * size + x)] = 1;

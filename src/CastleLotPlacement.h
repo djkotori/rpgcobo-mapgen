@@ -95,6 +95,10 @@ inline int PlaceFacilities(MapPlan& plan, int mode, std::mt19937& rng, bool dese
     int placed = 0;
     const auto& catalog = Catalog();
     std::vector<int> perRole(catalog.size(), 0);
+    // A map has at most one chapel: an annex chapel is only built where the keep has none (and only one).
+    bool chapelInKeep = false;
+    for (const auto& r : plan.regions) chapelInKeep |= r.kind == "room" && (r.role.find("chapel") != std::string::npos || r.role.find("shrine") != std::string::npos);
+    const auto capOf = [&](const std::string& role) { return role == "yard_well" ? 1 : role == "annex_chapel" ? (chapelInKeep ? 0 : 1) : 2; };
     std::vector<std::uint8_t> used(plan.biomes.size(), 0);  // lots already carved (with a facility or declined)
 
     // Decoration with the assets already registered in the editor's blocks (castle_fixture regions, as the keep's rooms have).
@@ -400,7 +404,7 @@ inline int PlaceFacilities(MapPlan& plan, int mode, std::mt19937& rng, bool dese
         std::vector<int> pool;
         for (int i = 0; i < static_cast<int>(catalog.size()); ++i) {
             const FacilitySpec& f = catalog[static_cast<std::size_t>(i)];
-            if (perRole[static_cast<std::size_t>(i)] >= (std::string(f.role) == "yard_well" ? 1 : 2) || (outdoorOnly && f.annex)) continue;
+            if (perRole[static_cast<std::size_t>(i)] >= capOf(f.role) || (outdoorOnly && f.annex)) continue;
             if ((f.minWidth <= lw && f.minHeight <= lh) || (f.minHeight <= lw && f.minWidth <= lh)) pool.push_back(i);
         }
         bool lotDone = false;
