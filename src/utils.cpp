@@ -183,7 +183,8 @@ float Worley2D(float x, float y, float cellSize, std::uint32_t seed) {
     return std::clamp(best / 1.4142f, 0.0f, 1.0f);
 }
 
-bool WritePngRgb(const std::string& path, int width, int height, const std::vector<Rgb>& rgb, std::string& outError) {
+bool WritePngRgb(const std::string& path, int width, int height, const std::vector<Rgb>& rgb, std::string& outError,
+                 const std::vector<PngText>& text) {
     if (width <= 0 || height <= 0) {
         outError = "Invalid image size";
         return false;
@@ -225,6 +226,17 @@ bool WritePngRgb(const std::string& path, int width, int height, const std::vect
     ihdr.push_back(0);
     ihdr.push_back(0);
     AppendChunk(png, "IHDR", ihdr);
+
+    for (const PngText& t : text) {
+        if (t.key.empty() || t.key.size() > 79) {
+            outError = "Invalid PNG text key: " + t.key;
+            return false;
+        }
+        std::vector<std::uint8_t> chunk(t.key.begin(), t.key.end());
+        chunk.push_back(0);
+        chunk.insert(chunk.end(), t.value.begin(), t.value.end());
+        AppendChunk(png, "tEXt", chunk);
+    }
 
     AppendChunk(png, "IDAT", idat);
     AppendChunk(png, "IEND", {});
