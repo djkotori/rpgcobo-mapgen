@@ -2,6 +2,7 @@
 
 #include "utils.h"
 #include "WorldBiomes.h"
+#include "WorldBridges.h"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,8 @@
 #include <vector>
 
 namespace {
+
+using mapgen::BridgeAxis;
 
 struct Point {
     int x = 0;
@@ -168,13 +171,14 @@ std::vector<int> MultiSourceDistance(const std::vector<std::uint8_t>& biomes, in
     return dist;
 }
 
-std::vector<Point> ReconstructPath(const std::vector<int>& parent, int goal, int w) {
+std::vector<Point> ReconstructPath(const std::vector<int>& parent, const std::vector<int>& crossing, int goal, int w) {
     std::vector<Point> path;
     int cur = goal;
     while (cur >= 0) {
         const int x = cur % w;
         const int y = cur / w;
         path.push_back({x, y});
+        if (crossing[cur] >= 0) path.push_back({crossing[cur] % w, crossing[cur] / w});
         cur = parent[static_cast<std::size_t>(cur)];
     }
     std::reverse(path.begin(), path.end());
@@ -188,7 +192,9 @@ std::vector<Point> FindPathAStar(
     Point start,
     Point goal,
     float waterCost,
-    bool allowMountain) {
+    bool allowMountain,
+    const std::vector<BridgeAxis>& bridgeAxes,
+    const std::vector<std::uint8_t>& bridgeBlocked) {
     const int n = w * h;
     const int s = Index(start.x, start.y, w);
     const int g = Index(goal.x, goal.y, w);
@@ -210,9 +216,7 @@ std::vector<Point> FindPathAStar(
         if (allowMountain && (b == MOUNTAIN || b == EXMOUNTAIN)) {
             return 26.0f;
         }
-        if (b == SEA || b == RIVER || b == LAKE) {
-            return waterCost;
-        }
+        if (IsWater(b)) return 1000000.0f;
         if (b == FOREST) {
             return 3.0f;
         }
@@ -221,6 +225,7 @@ std::vector<Point> FindPathAStar(
 
     std::vector<float> gScore(static_cast<std::size_t>(n), std::numeric_limits<float>::infinity());
     std::vector<int> parent(static_cast<std::size_t>(n), -1);
+    std::vector<int> crossing(static_cast<std::size_t>(n), -1);
     std::vector<std::uint8_t> closed(static_cast<std::size_t>(n), 0);
 
     struct Node {
@@ -251,20 +256,44 @@ std::vector<Point> FindPathAStar(
         closed[static_cast<std::size_t>(cur)] = 1;
 
         if (cur == g) {
-            return ReconstructPath(parent, g, w);
+            return ReconstructPath(parent, crossing, g, w);
         }
 
         const int x = cur % w;
         const int y = cur / w;
 
         for (int k = 0; k < 8; ++k) {
-            const int nx = x + dx[static_cast<std::size_t>(k)];
-            const int ny = y + dy[static_cast<std::size_t>(k)];
+            int nx = x + dx[k];
+            int ny = y + dy[k];
             if (!InBounds(nx, ny, w, h)) {
                 continue;
             }
 
-            const int ni = Index(nx, ny, w);
+            int ni = Index(nx, ny, w);
+            int bridge = -1;
+            float bridgeCost = 0.0f;
+            const auto nextBiome = biomes[ni];
+            if (nextBiome == RIVER || nextBiome == BRIDGE) {
+                if (k >= 4) continue;
+                const auto axis = k < 2 ? BridgeAxis::Horizontal : BridgeAxis::Vertical;
+                if (nextBiome == BRIDGE) {
+                    if (bridgeAxes[ni] != axis) continue;
+                    bridgeCost = 0.35f;
+                } else {
+                    if (waterCost > 100000.0f || bridgeBlocked[ni] ||
+                        !mapgen::IsRiverCrossing(biomes, w, h, nx, ny, axis)) continue;
+                    bridgeCost = waterCost;
+                }
+                bridge = ni;
+                nx += dx[k];
+                ny += dy[k];
+                if (!InBounds(nx, ny, w, h)) continue;
+                ni = Index(nx, ny, w);
+                if (nextBiome == BRIDGE && biomes[ni] != ROAD) continue;
+            } else if (k >= 4) {
+                const auto blocksCorner = [](std::uint8_t b) { return IsWater(b) || b == BRIDGE; };
+                if (blocksCorner(biomes[Index(nx, y, w)]) && blocksCorner(biomes[Index(x, ny, w)])) continue;
+            }
             const float cc = cellCost(biomes[static_cast<std::size_t>(ni)]);
             if (cc > 100000.0f) {
                 continue;
@@ -295,10 +324,11 @@ std::vector<Point> FindPathAStar(
             }
 
             const float step = (k < 4) ? 1.0f : 1.4f;
-            const float tentative = gScore[static_cast<std::size_t>(cur)] + step * (cc + lanePenalty);
+            const float tentative = gScore[static_cast<std::size_t>(cur)] + step * (cc + lanePenalty) + bridgeCost;
             if (tentative < gScore[static_cast<std::size_t>(ni)]) {
                 gScore[static_cast<std::size_t>(ni)] = tentative;
                 parent[static_cast<std::size_t>(ni)] = cur;
+                crossing[ni] = bridge;
                 const float f = tentative + heuristic(nx, ny);
                 open.push({ni, f});
             }
@@ -2356,6 +2386,84 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         outPlan.markers.push_back({i == 0 ? "capital" : "poi", poi.x, poi.y, i});
     }
 
+    std::vector<BridgeAxis> bridgeAxes(n, BridgeAxis::None);
+    std::vector<std::uint8_t> bridgeBlocked(n, 0);
+    const auto findRoadPath = [&](Point start, Point goal, float waterCost, bool allowMountain) {
+        return FindPathAStar(outBiomes, w, h, start, goal, waterCost, allowMountain, bridgeAxes, bridgeBlocked);
+    };
+    const auto paintRoad = [&](const std::vector<Point>& path, float mountainRate) {
+        std::vector<std::pair<int, BridgeAxis>> candidates;
+        const auto distance = [](Point a, Point b) { return std::abs(a.x - b.x) + std::abs(a.y - b.y); };
+        // Validate the entire route before committing any change to the map.
+        for (std::size_t j = 0; j < path.size(); ++j) {
+            const auto p = path[j];
+            const int cell = Index(p.x, p.y, w);
+            const auto b = outBiomes[cell];
+            if (b == SEA || b == LAKE) return 0;
+            if (b != RIVER && b != BRIDGE) continue;
+            if (j == 0 || j + 1 == path.size()) return 0;
+            const auto a = path[j - 1];
+            const auto z = path[j + 1];
+            if (distance(a, p) != 1 || a.x + z.x != 2 * p.x || a.y + z.y != 2 * p.y) return 0;
+            const auto axis = a.x != p.x ? BridgeAxis::Horizontal : BridgeAxis::Vertical;
+            if (b == BRIDGE) {
+                if (bridgeAxes[cell] != axis) return 0;
+                continue;
+            }
+            if (bridgeBlocked[cell] || !mapgen::IsRiverCrossing(outBiomes, w, h, p.x, p.y, axis)) return 0;
+            for (const auto& candidate : candidates) {
+                if (distance(p, {candidate.first % w, candidate.first / w}) < bridgeMinInterval) return 0;
+            }
+            candidates.emplace_back(cell, axis);
+        }
+
+        int painted = 0;
+        const auto paintLand = [&](Point p) {
+            auto& b = outBiomes[Index(p.x, p.y, w)];
+            if (b == ROAD || b == BRIDGE || IsWater(b)) return;
+            if (IsMountainLike(b) && (mountainRate <= 0.0f || ur(rng) >= mountainRate)) return;
+            b = ROAD;
+            ++painted;
+        };
+        const auto isCrossing = [&](Point p) {
+            const auto b = outBiomes[Index(p.x, p.y, w)];
+            return b == RIVER || b == BRIDGE;
+        };
+        for (std::size_t j = 0; j < path.size(); ++j) {
+            const auto p = path[j];
+            if (j > 0) {
+                const auto prev = path[j - 1];
+                if (std::abs(p.x - prev.x) == 1 && std::abs(p.y - prev.y) == 1 &&
+                    ((j >= 2 && isCrossing(path[j - 2])) || (j + 1 < path.size() && isCrossing(path[j + 1])))) {
+                    // Insert an elbow on dry land when approaching a crossing diagonally.
+                    const Point a{p.x, prev.y}, b{prev.x, p.y};
+                    const auto score = [&](Point bend) {
+                        const auto biome = outBiomes[Index(bend.x, bend.y, w)];
+                        if (biome == ROAD) return 0;
+                        if (IsWater(biome) || biome == BRIDGE || IsMountainLike(biome)) return 2;
+                        return 1;
+                    };
+                    const int aScore = score(a), bScore = score(b);
+                    if (std::min(aScore, bScore) < 2) paintLand(aScore <= bScore ? a : b);
+                }
+            }
+            paintLand(p);
+        }
+        for (const auto& [cell, axis] : candidates) {
+            const int x = cell % w, y = cell / w;
+            outBiomes[cell] = BRIDGE;
+            bridgeAxes[cell] = axis;
+            ++painted;
+            for (int oy = 1 - bridgeMinInterval; oy < bridgeMinInterval; ++oy) {
+                const int span = bridgeMinInterval - 1 - std::abs(oy);
+                for (int ox = -span; ox <= span; ++ox) {
+                    if (InBounds(x + ox, y + oy, w, h)) bridgeBlocked[Index(x + ox, y + oy, w)] = 1;
+                }
+            }
+        }
+        return painted;
+    };
+
     if (pois.size() >= 2) {
         std::vector<Edge> edges;
         for (int i = 0; i < static_cast<int>(pois.size()); ++i) {
@@ -2399,50 +2507,7 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
             }
         }
 
-        std::vector<Point> bridgeCenters;
-        const int maxBridgeSpan = 5;
         const float roadDiagonalRate = static_cast<float>(std::clamp(GetParam("roadDiagonalRate", 0.08), 0.0, 0.5));
-
-        auto collectWaterSegments = [&](const std::vector<Point>& path) {
-            std::vector<std::pair<int, int>> segments;
-            int segStart = -1;
-            for (int pi = 0; pi < static_cast<int>(path.size()); ++pi) {
-                const int idx = Index(path[static_cast<std::size_t>(pi)].x, path[static_cast<std::size_t>(pi)].y, w);
-                const bool onWater = IsWater(outBiomes[static_cast<std::size_t>(idx)]);
-                if (onWater && segStart < 0) {
-                    segStart = pi;
-                }
-                if (!onWater && segStart >= 0) {
-                    segments.push_back({segStart, pi - 1});
-                    segStart = -1;
-                }
-            }
-            if (segStart >= 0) {
-                segments.push_back({segStart, static_cast<int>(path.size()) - 1});
-            }
-            return segments;
-        };
-
-        auto isValidBridgePattern = [&](const std::vector<Point>& path, const std::vector<std::pair<int, int>>& waterSegments) {
-            if (waterSegments.empty() || waterSegments.size() > 3) {
-                return false;
-            }
-            for (const auto& seg : waterSegments) {
-                const int segLen = seg.second - seg.first + 1;
-                if (seg.first <= 0 || seg.second + 1 >= static_cast<int>(path.size()) || segLen > maxBridgeSpan) {
-                    return false;
-                }
-
-                const Point center = path[static_cast<std::size_t>((seg.first + seg.second) / 2)];
-                for (const Point& bp : bridgeCenters) {
-                    const int dist = std::abs(bp.x - center.x) + std::abs(bp.y - center.y);
-                    if (dist < bridgeMinInterval) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        };
 
         auto makeRetroPath = [&](const std::vector<Point>& rawPath) {
             if (rawPath.size() <= 1) {
@@ -2463,9 +2528,8 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
                     return 1000000.0f;
                 }
                 float score = 0.0f;
-                if (b == SEA || b == RIVER || b == LAKE) {
-                    score += 3.5f;
-                } else if (b == FOREST) {
+                if (IsWater(b) || b == BRIDGE) return 1000000.0f;
+                if (b == FOREST) {
                     score += 0.7f;
                 } else if (b == DESERT) {
                     score += 0.2f;
@@ -2547,55 +2611,15 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         for (const Edge& e : roadEdges) {
             const Point s = pois[static_cast<std::size_t>(e.a)];
             const Point g = pois[static_cast<std::size_t>(e.b)];
-            const std::vector<Point> dryPath = FindPathAStar(outBiomes, w, h, s, g, 1000000.0f, false);
-            const std::vector<Point> wetPath = FindPathAStar(outBiomes, w, h, s, g, 8.5f, false);
-
-            std::vector<Point> path = dryPath;
-            bool usedWetFallback = false;
-
-            if (!wetPath.empty()) {
-                const std::vector<std::pair<int, int>> wetSegments = collectWaterSegments(wetPath);
-                const bool wetValid = isValidBridgePattern(wetPath, wetSegments);
-                if (path.empty()) {
-                    if (wetValid) {
-                        path = wetPath;
-                        usedWetFallback = true;
-                    }
-                } else if (wetValid && wetPath.size() + 8 < path.size()) {
-                    path = wetPath;
-                    usedWetFallback = true;
-                }
-            }
-
-            if (path.empty()) {
-                continue;
-            }
-
-            const std::vector<Point> paintPath = makeRetroPath(path);
-            const std::vector<std::pair<int, int>> waterSegments = collectWaterSegments(paintPath);
-            if (usedWetFallback && !isValidBridgePattern(paintPath, waterSegments)) {
-                continue;
-            }
-            if (shouldSkipOverParallelPath(paintPath, 0.18f, 4)) {
-                continue;
-            }
-
-            for (const Point& p : paintPath) {
-                const int i = Index(p.x, p.y, w);
-                const std::uint8_t b = outBiomes[static_cast<std::size_t>(i)];
-
-                if (b == RIVER || b == LAKE || b == SEA) {
-                    outBiomes[static_cast<std::size_t>(i)] = BRIDGE;
-                } else if (!IsWater(b) && !IsMountainLike(b)) {
-                    outBiomes[static_cast<std::size_t>(i)] = ROAD;
-                }
-            }
-
-            if (usedWetFallback) {
-                for (const auto& seg : waterSegments) {
-                    bridgeCenters.push_back(paintPath[static_cast<std::size_t>((seg.first + seg.second) / 2)]);
-                }
-            }
+            const auto dryPath = findRoadPath(s, g, 1000000.0f, false);
+            const auto wetPath = findRoadPath(s, g, 8.5f, false);
+            const auto tryPath = [&](const std::vector<Point>& path) {
+                const auto retro = makeRetroPath(path);
+                return !shouldSkipOverParallelPath(retro, 0.18f, 4) && paintRoad(retro, 0.0f) > 0;
+            };
+            if (!wetPath.empty() && (dryPath.empty() || wetPath.size() + 8 < dryPath.size()) &&
+                tryPath(wetPath)) continue;
+            tryPath(dryPath);
         }
 
         auto isRoadNetworkCell = [&](std::uint8_t b) {
@@ -2707,38 +2731,17 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
 
             const Point s = pois[static_cast<std::size_t>(i)];
             const Point g = pois[static_cast<std::size_t>(anchor)];
-            std::vector<Point> repair = FindPathAStar(outBiomes, w, h, s, g, 7.8f, true);
+            std::vector<Point> repair = findRoadPath(s, g, 7.8f, true);
             if (repair.empty()) {
                 continue;
             }
 
             std::vector<Point> paintRepair = makeRetroPath(repair);
-            const std::vector<std::pair<int, int>> segs = collectWaterSegments(paintRepair);
-            if (!segs.empty() && !isValidBridgePattern(paintRepair, segs)) {
-                continue;
-            }
             if (shouldSkipOverParallelPath(paintRepair, 0.12f, 3)) {
                 continue;
             }
 
-            for (const Point& p : paintRepair) {
-                const int pi = Index(p.x, p.y, w);
-                const std::uint8_t bb = outBiomes[static_cast<std::size_t>(pi)];
-                if (bb == SEA || bb == RIVER || bb == LAKE) {
-                    outBiomes[static_cast<std::size_t>(pi)] = BRIDGE;
-                } else if (bb == MOUNTAIN || bb == EXMOUNTAIN) {
-                    if (ur(rng) < 0.08f) {
-                        outBiomes[static_cast<std::size_t>(pi)] = ROAD;
-                    }
-                } else {
-                    outBiomes[static_cast<std::size_t>(pi)] = ROAD;
-                }
-            }
-
-            connectedPoiIdx.push_back(i);
-            for (const auto& seg : segs) {
-                bridgeCenters.push_back(paintRepair[static_cast<std::size_t>((seg.first + seg.second) / 2)]);
-            }
+            if (paintRoad(paintRepair, 0.08f) > 0 && isPoiConnectedByRoad(s, g)) connectedPoiIdx.push_back(i);
         }
     }
 
@@ -2829,7 +2832,7 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
         for (int y = 1; y < h - 1; ++y) {
             for (int x = 1; x < w - 1; ++x) {
                 const int i = Index(x, y, w);
-                if (!isRoadLike(outBiomes[static_cast<std::size_t>(i)])) {
+                if (outBiomes[static_cast<std::size_t>(i)] != ROAD) {
                     continue;
                 }
 
@@ -2871,9 +2874,9 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
             const Point target{fi % w, fi / w};
             Point anchor = hubs[static_cast<std::size_t>(done % hubs.size())];
 
-            std::vector<Point> branchPath = FindPathAStar(outBiomes, w, h, anchor, target, 10.0f, false);
+            std::vector<Point> branchPath = findRoadPath(anchor, target, 10.0f, false);
             if (branchPath.empty()) {
-                branchPath = FindPathAStar(outBiomes, w, h, anchor, target, 8.0f, true);
+                branchPath = findRoadPath(anchor, target, 8.0f, true);
             }
             if (branchPath.empty()) {
                 continue;
@@ -2882,121 +2885,24 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
                 continue;
             }
 
-            int painted = 0;
-            for (const Point& p : branchPath) {
-                const int i = Index(p.x, p.y, w);
-                std::uint8_t b = outBiomes[static_cast<std::size_t>(i)];
-                if (b == ROAD || b == BRIDGE) {
-                    continue;
-                }
-                if (b == SEA || b == RIVER || b == LAKE) {
-                    outBiomes[static_cast<std::size_t>(i)] = BRIDGE;
-                    ++painted;
-                } else if (b == MOUNTAIN || b == EXMOUNTAIN) {
-                    if (ur(rng) < 0.08f) {
-                        outBiomes[static_cast<std::size_t>(i)] = ROAD;
-                        ++painted;
-                    }
-                } else {
-                    outBiomes[static_cast<std::size_t>(i)] = ROAD;
-                    ++painted;
-                }
-            }
-
-            if (painted > 0) {
+            if (paintRoad(branchPath, 0.08f) > 0) {
                 ++done;
             }
         }
     }
 
     {
-        const std::array<int, 4> bdx = {1, -1, 0, 0};
-        const std::array<int, 4> bdy = {0, 0, 1, -1};
         const int maxAutoBridges = std::clamp(static_cast<int>(pois.size()) / 2, 1, 8);
-        const int maxSpan = 3;
         int bridgesAdded = 0;
-
-        auto hasRoadNearby = [&](int x, int y, int r) {
-            for (int oy = -r; oy <= r; ++oy) {
-                for (int ox = -r; ox <= r; ++ox) {
-                    const int nx = x + ox;
-                    const int ny = y + oy;
-                    if (!InBounds(nx, ny, w, h)) {
-                        continue;
-                    }
-                    const std::uint8_t b = outBiomes[static_cast<std::size_t>(Index(nx, ny, w))];
-                    if (b == ROAD || b == BRIDGE) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        };
-
-        auto hasBridgeTooClose = [&](int x, int y, int minDist) {
-            for (int ny = std::max(0, y - minDist); ny <= std::min(h - 1, y + minDist); ++ny) {
-                for (int nx = std::max(0, x - minDist); nx <= std::min(w - 1, x + minDist); ++nx) {
-                    const int md = std::abs(nx - x) + std::abs(ny - y);
-                    if (md > minDist) {
-                        continue;
-                    }
-                    if (outBiomes[static_cast<std::size_t>(Index(nx, ny, w))] == BRIDGE) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        };
-
         for (int y = 2; y < h - 2 && bridgesAdded < maxAutoBridges; ++y) {
             for (int x = 2; x < w - 2 && bridgesAdded < maxAutoBridges; ++x) {
                 const int i = Index(x, y, w);
-                if (outBiomes[static_cast<std::size_t>(i)] != ROAD) {
-                    continue;
-                }
-
-                for (int d = 0; d < 4 && bridgesAdded < maxAutoBridges; ++d) {
-                    int cx = x;
-                    int cy = y;
-                    std::vector<int> waterCells;
-
-                    for (int step = 1; step <= maxSpan; ++step) {
-                        cx += bdx[static_cast<std::size_t>(d)];
-                        cy += bdy[static_cast<std::size_t>(d)];
-                        if (!InBounds(cx, cy, w, h)) {
-                            break;
-                        }
-
-                        const int ci = Index(cx, cy, w);
-                        const std::uint8_t b = outBiomes[static_cast<std::size_t>(ci)];
-                        if (b == RIVER || b == LAKE || b == SEA) {
-                            waterCells.push_back(ci);
-                            continue;
-                        }
-
-                        if (waterCells.empty()) {
-                            break;
-                        }
-
-                        if (IsMountainLike(b) || IsWater(b)) {
-                            break;
-                        }
-
-                        if (!hasRoadNearby(cx, cy, 2)) {
-                            break;
-                        }
-
-                        const Point center{(x + cx) / 2, (y + cy) / 2};
-                        if (hasBridgeTooClose(center.x, center.y, std::max(4, bridgeMinInterval / 2))) {
-                            break;
-                        }
-
-                        for (int wi : waterCells) {
-                            outBiomes[static_cast<std::size_t>(wi)] = BRIDGE;
-                        }
-                        if (outBiomes[static_cast<std::size_t>(ci)] == PLAIN || outBiomes[static_cast<std::size_t>(ci)] == DESERT || outBiomes[static_cast<std::size_t>(ci)] == FOREST) {
-                            outBiomes[static_cast<std::size_t>(ci)] = ROAD;
-                        }
+                if (outBiomes[i] != RIVER || bridgeBlocked[i]) continue;
+                for (const auto& bank : {Point{1, 0}, Point{0, 1}}) {
+                    const Point a{x - bank.x, y - bank.y};
+                    const Point b{x + bank.x, y + bank.y};
+                    if (outBiomes[Index(a.x, a.y, w)] == ROAD && outBiomes[Index(b.x, b.y, w)] == ROAD &&
+                        paintRoad({a, {x, y}, b}, 0.0f) > 0) {
                         ++bridgesAdded;
                         break;
                     }
@@ -3052,7 +2958,7 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
 
                 const Point s = pois[static_cast<std::size_t>(e.a)];
                 const Point g = pois[static_cast<std::size_t>(e.b)];
-                std::vector<Point> path = FindPathAStar(outBiomes, w, h, s, g, 7.5f, true);
+                std::vector<Point> path = findRoadPath(s, g, 7.5f, true);
                 if (path.empty()) {
                     continue;
                 }
@@ -3084,25 +2990,7 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
                     continue;
                 }
 
-                for (const Point& p : path) {
-                    const int i = Index(p.x, p.y, w);
-                    const std::uint8_t b = outBiomes[static_cast<std::size_t>(i)];
-                    if (b == ROAD || b == BRIDGE) {
-                        continue;
-                    }
-                    if (b == SEA || b == RIVER || b == LAKE) {
-                        outBiomes[static_cast<std::size_t>(i)] = BRIDGE;
-                        ++roadCount;
-                    } else if (b == MOUNTAIN || b == EXMOUNTAIN) {
-                        if (ur(rng) < 0.12f) {
-                            outBiomes[static_cast<std::size_t>(i)] = ROAD;
-                            ++roadCount;
-                        }
-                    } else {
-                        outBiomes[static_cast<std::size_t>(i)] = ROAD;
-                        ++roadCount;
-                    }
-                }
+                roadCount += paintRoad(path, 0.12f);
             }
         }
     }
@@ -3120,10 +3008,8 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
                     if (r < rimThreshold) {
                         continue;
                     }
-                    if (b == SEA || b == LAKE || b == RIVER) {
+                    if (IsWater(b) || b == BRIDGE) {
                         outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(PLAIN);
-                    } else if (b == BRIDGE) {
-                        outBiomes[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(ROAD);
                     }
                 }
             }
@@ -3294,6 +3180,17 @@ bool WorldMapImageGenerator::Generate(MapPlan& outPlan, std::string& outError) {
             } else {
                 outBiomes[static_cast<std::size_t>(cell)] = PLAIN;
             }
+        }
+    }
+
+    // The final coastline and basin rim can change a crossing's surroundings.
+    for (int i = 0; i < n; ++i) {
+        if (outBiomes[i] != BRIDGE) continue;
+        const auto axis = bridgeAxes[i];
+        const int step = axis == BridgeAxis::Horizontal ? 1 : w;
+        if (!mapgen::IsRiverCrossing(outBiomes, w, h, i % w, i / w, axis) ||
+            outBiomes[i - step] != ROAD || outBiomes[i + step] != ROAD) {
+            outBiomes[i] = RIVER;
         }
     }
 

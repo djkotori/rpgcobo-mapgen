@@ -63,14 +63,16 @@ AIMapImageGen/
 ├── doc/                 ← spec documents (generation algorithm details)
 │   ├── mapgen_world.md
 │   ├── mapgen_dungeon.md
-│   └── mapgen_cave.md
+│   ├── mapgen_cave.md
+│   └── mapgen_forest.md
 │   ├── mapgen_town.md
 │   ├── mapgen_village.md
 │   └── mapgen_castle.md
 ├── sample/              ← sample images
 │   ├── worldmap/
 │   ├── dungeon/
-│   └── cave/
+│   ├── cave/
+│   └── forest/
 └── src/                 ← C++ source code
     ├── CMakeLists.txt
     ├── main.cpp
@@ -80,6 +82,7 @@ AIMapImageGen/
     ├── WorldMapImageGenerator.{h,cpp}
     ├── DungeonMapImageGenerator.{h,cpp}
     ├── CaveMapImageGenerator.{h,cpp}
+    ├── ForestMapImageGenerator.{h,cpp}
     ├── TownMapImageGenerator.{h,cpp}
     ├── VillageMapImageGenerator.{h,cpp}
     ├── CastleMapImageGenerator.{h,cpp}
@@ -139,16 +142,16 @@ copy ..\build\Release\mapimggen.exe ..
 ## Usage
 
 ```
-mapimggen.exe -type <world|dungeon|cave|town|village|castle> [options]
+mapimggen.exe -type <world|dungeon|cave|forest|town|village|castle> [options]
 ```
 
 ### Options
 
 | Option | Description | Default |
 |---|---|---|
-| `-type <world\|dungeon\|cave\|town\|village\|castle>` | Map type | `world` |
-| `-w <width>` | Width in pixels. Range: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
-| `-d <depth>` | Height in pixels. Range: 64–1024 | world:256 / dungeon,cave,town,village,castle:160 |
+| `-type <world\|dungeon\|cave\|forest\|town\|village\|castle>` | Map type | `world` |
+| `-w <width>` | Width in pixels. CLI range: 16–1024 (Forest minimum: 32) | world:256 / forest:40 / others:160 |
+| `-d <depth>` | Height in pixels. CLI range: 16–1024 (Forest minimum: 32) | world:256 / forest:40 / others:160 |
 | `-seed <number>` | Random seed (for reproducibility) | Random |
 | `-dir <directory>` | Output directory | `.` (current directory) |
 | `-out <filename>` | Output filename (no extension) | `out` |
@@ -158,6 +161,7 @@ mapimggen.exe -type <world|dungeon|cave|town|village|castle> [options]
 | `--plan` | Write biome data plus regions/markers as JSON | Disabled |
 | `--strict` | Exit with code 7 when quality validation fails | Disabled |
 | `-p <key=value>` | Override a specific generation parameter | — |
+
 
 ### Examples
 
@@ -170,6 +174,9 @@ mapimggen.exe -type dungeon -w 160 -d 160 -dir out -out dungeon_001 --png --data
 
 REM Cave (default size, PNG only)
 mapimggen.exe -type cave -dir out -out cave_001 --png
+
+REM Forest (40x40 cell maze with clearings, lakes, rivers, and northern cliffs)
+mapimggen.exe -type forest -seed 12345 -dir out -out forest_001 --png --report
 
 REM Town (structured plan output)
 mapimggen.exe -type town -seed 12345 -dir out -out town_001 --png --report --plan

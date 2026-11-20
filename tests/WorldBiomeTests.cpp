@@ -1,6 +1,7 @@
 #include "MapImageGenerator.h"
 #include "MapQuality.h"
 #include "WorldBiomes.h"
+#include "WorldBridges.h"
 #include "WorldMapImageGenerator.h"
 
 #include <algorithm>
@@ -546,7 +547,44 @@ void TestWorldRateCalibration() {
               << ", northern coverage: " << coveredNorth << "/" << eligibleNorth << '\n';
 }
 
+void TestBridgeCrossings() {
+    using mapgen::BridgeAxis;
+    constexpr int size = 9, center = 4;
+    const auto index = [=](int x, int y) { return (center + y) * size + center + x; };
+    for (bool transpose : {false, true}) {
+        const auto axis = transpose ? BridgeAxis::Vertical : BridgeAxis::Horizontal;
+        const auto parallel = transpose ? BridgeAxis::Horizontal : BridgeAxis::Vertical;
+        const auto cell = [&](int x, int y) { return transpose ? index(y, x) : index(x, y); };
+        const auto crosses = [&](const auto& terrain, BridgeAxis direction) {
+            return mapgen::IsRiverCrossing(terrain, size, size, center, center, direction);
+        };
+        for (int slope : {-1, 0, 1}) {
+            std::vector<std::uint8_t> river(size * size, PLAIN);
+            for (int y = -2; y <= 2; ++y) river[cell(y * slope, y)] = RIVER;
+            river[cell(-1, 0)] = FOREST;
+            river[cell(1, 0)] = DESERT;
+            Require(crosses(river, axis), "missed a straight or diagonal one-cell river crossing");
+            auto wide = river;
+            wide[cell(1, 0)] = RIVER;
+            Require(!crosses(wide, axis), "accepted a crossing wider than one cell");
+            auto coastal = river;
+            coastal[cell(1, 1)] = SEA;
+            Require(!crosses(coastal, axis), "accepted a crossing touching sea");
+            auto deadEnd = river;
+            deadEnd[cell(2 * slope, 2)] = PLAIN;
+            Require(!crosses(deadEnd, axis), "accepted a river with locally connected banks");
+            if (slope == 0) Require(!crosses(river, parallel), "accepted a bridge parallel to the river");
+            for (auto water : {LAKE, SEA}) {
+                auto otherWater = river;
+                otherWater[cell(0, 0)] = water;
+                Require(!crosses(otherWater, axis), "accepted a bridge replacing lake or sea");
+            }
+        }
+    }
+}
+
 void TestGeneratedWorlds() {
+    int totalBridges = 0;
     for (int size : {64, 128, 256}) for (int mode = 0; mode < 3; ++mode) for (std::uint32_t seed : {11U, 42U, 101U}) {
         MapGenParams params;
         params.width = size; params.depth = size; params.seed = seed;
@@ -567,6 +605,23 @@ void TestGeneratedWorlds() {
         Require(output.biomes == repeat.biomes, "world is not deterministic");
         CheckSnowPatches(output);
         Require(Count(output, COAST) > 0, "coast missing from generated world");
+        std::vector<int> bridges;
+        for (int i = 0; i < output.width * output.depth; ++i) {
+            if (output.biomes[i] != BRIDGE) continue;
+            const int x = i % output.width, y = i / output.width;
+            const auto validAxis = [&](mapgen::BridgeAxis axis, int step) {
+                return mapgen::IsRiverCrossing(output.biomes, output.width, output.depth, x, y, axis) &&
+                    output.biomes[i - step] == ROAD && output.biomes[i + step] == ROAD;
+            };
+            Require(validAxis(mapgen::BridgeAxis::Horizontal, 1) ||
+                validAxis(mapgen::BridgeAxis::Vertical, output.width), "bridge lacks opposite road banks or a separated river crossing");
+            for (int previous : bridges) {
+                Require(std::abs(x - previous % output.width) + std::abs(y - previous / output.width) >= 18,
+                    "bridges violate the minimum interval");
+            }
+            bridges.push_back(i);
+            ++totalBridges;
+        }
         int shoreline = 0, coastalShoreline = 0;
         for (int y = 0; y < output.depth; ++y) for (int x = 0; x < output.width; ++x) {
             const int i = y * output.width + x;
@@ -601,6 +656,8 @@ void TestGeneratedWorlds() {
         const auto snowColor = generator.BiomeToColor(SNOWFIELD);
         Require(coastColor.r != 255 && snowColor.r != 255, "missing biome color");
     }
+    Require(totalBridges > 0, "no bridges in generated world fixtures");
+    std::cout << "Validated bridges across generated worlds: " << totalBridges << '\n';
 }
 
 void TestParameterValidation() {
@@ -669,6 +726,7 @@ int main() {
         TestSnowStraightBoundaries();
         TestSnowLatitudeFade();
         TestWorldRateCalibration();
+        TestBridgeCrossings();
         TestGeneratedWorlds();
         TestParameterValidation();
         TestMountainRateInWorldGenerator();
